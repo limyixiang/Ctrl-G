@@ -80,25 +80,72 @@ def aggregate_edge_weights(E2S, y, num_states):
 
     return y_out
 
-
+# Original one
+# def ends_at(prefix, suffix,
+#     offset_min, D_cache, dfa_model):
+#     ans = []
+#     for s in range(0, len(suffix)):
+#         offset = len(prefix) - s
+#         if offset < offset_min:
+#             break
+#         state = D_cache[tuple(prefix[:-s])] if s != 0 else D_cache[tuple(prefix)]
+#         if dfa_model.is_accept(state):
+#             if s == 0 or tuple(suffix[:s]) == prefix[-s:]:
+#                 ans.append(s)
+#     return ans
 def ends_at(prefix, suffix,
     offset_min, D_cache, dfa_model):
     ans = []
+    # Ensure we can get the DFA state for any target prefix by recomputing from the nearest cached ancestor.
+    def ensure_state(target):
+        if target in D_cache:
+            return D_cache[target]
+        # Find the longest cached ancestor of `target`.
+        k = len(target)
+        while k > 0 and target[:k] not in D_cache:
+            k -= 1
+        if k == 0:
+            # Fall back to a shortest cached base (should include the initial prompt tuple).
+            if not D_cache:
+                raise KeyError("D_cache is empty; cannot recompute DFA state.")
+            shortest_len = min(len(p) for p in D_cache.keys())
+            base = None
+            for p in D_cache.keys():
+                if len(p) == shortest_len and (len(p) == 0 or (len(p) <= len(target) and p == target[:len(p)])):
+                    base = p
+                    break
+            if base is None:
+                base = min(D_cache.keys(), key=len)
+            state = D_cache[base]
+            start_idx = len(base)
+        else:
+            base = target[:k]
+            state = D_cache[base]
+            start_idx = k
+        # Walk remaining tokens (don’t cache intermediates).
+        for tok in target[start_idx:]:
+            state = dfa_model.next_state(state, tok)
+        # Cache only the final state for `target`.
+        D_cache[target] = state
+        return state
+
     for s in range(0, len(suffix)):
         offset = len(prefix) - s
         if offset < offset_min:
             break
-        state = D_cache[tuple(prefix[:-s])] if s != 0 else D_cache[tuple(prefix)]
+        target = tuple(prefix) if s == 0 else tuple(prefix[:-s])
+        state = ensure_state(target)
         if dfa_model.is_accept(state):
             if s == 0 or tuple(suffix[:s]) == prefix[-s:]:
                 ans.append(s)
     return ans
 
 
+
 class ConstraintLogitsProcessor(LogitsProcessor):
     def __init__(self, hmm_model, dfa_model,
         min_new_tokens, max_new_tokens, prompt_ids, prefix_ids=[], suffix_ids=[],
-        temperature=1.0, token_ranges=None, hmm_batch_size=None):
+        temperature=1.0, alpha=1.0, token_ranges=None, hmm_batch_size=None):
 
         device = hmm_model.alpha_exp.device
         hidden_states, vocab_size = hmm_model.hidden_states, hmm_model.vocab_size
@@ -188,6 +235,7 @@ class ConstraintLogitsProcessor(LogitsProcessor):
         self.suffix_ids = suffix_ids
 
         self.temperature = temperature
+        self.alpha = alpha
         self.token_ranges = token_ranges
         self.hmm_batch_size = hmm_batch_size
 
@@ -222,7 +270,7 @@ class ConstraintLogitsProcessor(LogitsProcessor):
             if hmm_logits.shape[1] < logits.shape[1]:
                 neginf = torch.full((hmm_logits.shape[0], logits.shape[1]-hmm_logits.shape[1]), -1e30, device=hmm_logits.device)
                 hmm_logits = torch.cat((hmm_logits, neginf), dim=1)
-            logits[selected_idx, :] += hmm_logits
+            logits[selected_idx, :] += self.alpha * hmm_logits
             logits = torch.log_softmax(logits, dim=-1)
 
         logits = torch.log_softmax(logits / self.temperature, dim=-1)
@@ -239,7 +287,8 @@ class ConstraintLogitsProcessor(LogitsProcessor):
 
         suffix = self.suffix_ids
         generation_offset = len(self.prefix_ids)
-        prefix_num, prefix_len = len(prefixes), len(prefixes[0])
+        prefix_num = len(prefixes)
+        prefix_lens = [len(prefix) for prefix in prefixes]
 
         VE_mask, EV_mask, T_mask = self.dfa_model.VE_mask, self.dfa_model.EV_mask, self.dfa_model.T_mask
         A_cache, B_cache, C_cache, D_cache = self.A_cache, self.B_cache, self.C_cache, self.D_cache
@@ -247,27 +296,64 @@ class ConstraintLogitsProcessor(LogitsProcessor):
         hidden_states, vocab_size = self.hmm_model.hidden_states, self.hmm_model.vocab_size
 
         # update prefix hidden states
-        if prefix_len > generation_offset:
-            # update A_cache
-            A = torch.stack([A_cache[prefix[:-1]] for prefix in prefixes], dim=0) # len(prefixes) * hidden_states
-            log_probs = torch.stack([beta[:, prefix[-1]] for prefix in prefixes], dim=0) # len(prefixes) * hidden_states
-            A += log_probs
-            A = matmul_loga_b(A, alpha_exp)
-            for i, prefix in enumerate(prefixes):
-                A_cache[prefix] = A[i]
+        # Process prefixes that need cache updates
+        
+        prefixes_to_update = [i for i, prefix_len in enumerate(prefix_lens) if prefix_len > generation_offset]
+        if prefixes_to_update:
+            # update A_cache for prefixes that need it
+            for prefix_idx in prefixes_to_update:
+                prefix = prefixes[prefix_idx]
+                if prefix not in A_cache:
+                    if prefix[:-1] in A_cache:
+                        A_prev = A_cache[prefix[:-1]]
+                        log_prob = beta[:, prefix[-1]]
+                        A_new = A_prev + log_prob
+                        A_new = matmul_loga_b(A_new[None, :], alpha_exp).squeeze(0)
+                        A_cache[prefix] = A_new
+                    else: 
+                        # For vllm, there might be output resumed_from_preemption. (temp remove from batch for by scheduler)
+                        # For a few of those cases, we recalculate all missing prefixes
+                        # Iteratively compute from the initial prefix
+                        A_current = A_cache[tuple(self.prefix_ids)]
+                        for token_idx in range(len(self.prefix_ids), len(prefix)):
+                            token = prefix[token_idx]
+                            log_prob = beta[:, token]
+                            A_current = A_current + log_prob
+                            A_current = matmul_loga_b(A_current[None, :], alpha_exp).squeeze(0)
+                            # Cache intermediate results
+                        A_cache[prefix] = A_current # only store the last one
 
             # update D_cache
-            for prefix in prefixes:
-                next_state = self.dfa_model.next_state(D_cache[prefix[:-1]], prefix[-1])
-                D_cache[prefix] = next_state
-        else:
-            A = torch.stack([A_cache[prefix] for prefix in prefixes], dim=0) # prefix_num * hidden_states
+            for prefix_idx in prefixes_to_update:
+                prefix = prefixes[prefix_idx]
+                if prefix not in D_cache:
+                    # Check if parent prefix exists in cache
+                    parent_prefix = prefix[:-1]
+                    if parent_prefix not in D_cache:
+                        # Recalculate all missing intermediate prefixes from initial state
+                        current_state = D_cache[tuple(self.prefix_ids)]
+                        for token_idx in range(len(self.prefix_ids), len(parent_prefix)):
+                            token = parent_prefix[token_idx]
+                            current_state = self.dfa_model.next_state(current_state, token)
+                            # Cache all intermediate results
+                            intermediate_prefix = parent_prefix[:token_idx + 1]
+                            D_cache[intermediate_prefix] = current_state
+                    
+                    next_state = self.dfa_model.next_state(D_cache[parent_prefix], prefix[-1])
+                    D_cache[prefix] = next_state
+
+        # Get A values for all prefixes
+        A = torch.stack([A_cache[prefix] for prefix in prefixes], dim=0) # prefix_num * hidden_states
+
+        # Clean up cache to limit its size
+        self._cleanup_cache(prefixes)
 
         logits = torch.full((prefix_num, vocab_size), neginf, device=device)
 
         # gather the list of indices that has at least one more token left before suffix
-        generated_tokens = prefix_len - generation_offset
-        selected_idx = [prefix_idx for prefix_idx, prefix in enumerate(prefixes)
+        # Calculate generated tokens for each prefix individually
+        generated_tokens_list = [prefix_len - generation_offset for prefix_len in prefix_lens]
+        selected_idx = [prefix_idx for prefix_idx, generated_tokens in enumerate(generated_tokens_list)
             if token_ranges[prefix_idx][1] - generated_tokens > 0]
         selected_num = len(selected_idx)
         if len(selected_idx) > 0:
@@ -282,6 +368,7 @@ class ConstraintLogitsProcessor(LogitsProcessor):
                 C_batch = []
                 for prefix_idx in selected_batch:
                     min_tokens, max_tokens = token_ranges[prefix_idx]
+                    generated_tokens = generated_tokens_list[prefix_idx]
                     remaining_tokens_max = max_tokens - generated_tokens
                     remaining_tokens_min = max(1, min_tokens - generated_tokens)
                     C_batch.append(C_cache[(remaining_tokens_min-1, remaining_tokens_max-1)])
@@ -319,9 +406,28 @@ class ConstraintLogitsProcessor(LogitsProcessor):
 
         # compute normalizing constant; no hmm mini-batch here
         logits_ = matmul_log(A, beta)
-
+        
         return logits, logits_
-
+    
+    def _cleanup_cache(self, prefixes):
+        # print("Cleanup cache!")
+        """Clean up cache that is not recently used to limit its size."""
+        keys_to_keep_cache = [tuple(self.prefix_ids)] # always keep the initial prefix
+        keys_to_keep_cache += [prefix for prefix in prefixes] # keep all current prefixes
+        
+        A_cache_size_limit = 0 # Always clear cache
+        if len(self.A_cache) > A_cache_size_limit:
+            for key in list(self.A_cache.keys()):
+                if not (key in keys_to_keep_cache):
+                    del self.A_cache[key]
+        
+        # We allow D_cache to grow very large since each entry is small
+        D_cache_size_limit = 0
+        if len(self.D_cache) > D_cache_size_limit:
+            for key in list(self.D_cache.keys()):
+                if not (key in keys_to_keep_cache):
+                    del self.D_cache[key]
+        # print(f"Deleted {del_num} entries from A_cache ({len(existing_keys)}) to {len(self.A_cache)}")
 
 def extract_generated_ids(outputs, prompt_ids, suffix_ids, eos_token_id):
     processed_outputs = []

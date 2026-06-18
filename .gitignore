@@ -2,3 +2,20 @@ workspace/*
 distillation/workspace/
 .vscode
 .*
+
+# distillation_vllm: training artifacts and experiment data (not committed)
+distillation_vllm/workspace/
+distillation_vllm/outputs/
+distillation_vllm/dapo/
+distillation_vllm/niv2/
+distillation_vllm/openvlthinker*/
+distillation_vllm/*.json
+distillation_vllm/*.lvd
+distillation_vllm/*.dev
+distillation_vllm/*.train*
+distillation_vllm/*.debug
+distillation_vllm/*.embeddings*
+distillation_vllm/*.log
+# python bytecode
+__pycache__/
+*.pyc
