@@ -156,3 +156,7 @@ for idx, generated in enumerate(generated_ids[:10]):
 ## HMM distillation for Ctrl-G
 
 We refer readers to `distillation/tutorial_distillation.ipynb` for a tutorial on HMM distillation, i.e., given an LLM where we can sample from, train an HMM as its approximation.
+
+### Faster distillation with vLLM (text & vision-language models)
+
+`distillation_vllm/` provides a drop-in alternative that samples base-model outputs through a [vLLM](https://github.com/vllm-project/vllm) server (~10× faster) and additionally supports distilling HMMs from **vision-language models**. See [`distillation_vllm/README.md`](distillation_vllm/README.md) and the tutorials [`distillation_vllm/train_hmm.ipynb`](distillation_vllm/train_hmm.ipynb) (text) and [`distillation_vllm/train_hmm_for_vlm.ipynb`](distillation_vllm/train_hmm_for_vlm.ipynb) (vision-language).
