@@ -137,11 +137,28 @@ def DFA_merge_dead_states(A):
 
 def DFA_merge_undistinguishable_states(A, device='cpu'):
     """Merge equivalent states via partition refinement (Hopcroft-style, union-find based)."""
+    # Two states are "undistinguishable" (equivalent) if the exact same set of future token
+    # sequences leads to an accept state from either one; such states can be collapsed into
+    # a single state without changing the language the DFA accepts.
+    #
+    # The algorithm below is partition refinement, run from the coarsest guess downwards
+    # (Moore's algorithm -- re-check every group each round, rather than Hopcroft's worklist):
+    #   1. Start by assuming all accept states are equivalent to each other, and likewise all
+    #      non-accept states. That gives two groups.
+    #   2. Two states in the same group are in fact distinguishable if some token sends them
+    #      into *different* groups. Split the group along those lines.
+    #   3. Repeat until nothing splits. The surviving groups are the equivalence classes,
+    #      and each one becomes a single state of the output DFA.
+    # The current grouping lives in a union-find parent array `fa` indexed by state index:
+    # two states are in the same group iff they have the same union-find root.
     edges = A['edges']
     initial_state = A['initial_state']
     accept_states = A['accept_states']
     vocab_size = edges[0][2].shape[0]
 
+    # Number the states 0..num_states-1. State labels can be arbitrary hashable objects
+    # (ints here, but tuples after DFA_prod_binary / AhoCorasickBuilder), so we need integer
+    # indices to use them as array offsets below.
     state2idx, num_states = {}, 0
     for edge in edges:
         u, v, _ = edge
@@ -150,12 +167,16 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
                 state2idx[x] = num_states
                 num_states += 1
 
-    # G[u][t] is the index of the state you reach by reading token t in state u.
+    # Build the dense transition table: G[u][t] is the index of the state you reach by
+    # reading token t in state u.
     # This works because of two DFA invariants:
     # 1. Determinism: For each state, the bitsets on its outgoing edges are pairwise disjoint.
     #    No token appears on two edges out of the same state.
     # 2. Totality: For each state, the bitsets on its outgoing edges OR together to all-True.
     #    Every token in the vocab has somewhere to go, so the machine never gets stuck mid-sequence.
+    # `v * trans` is v on exactly the tokens this edge is labelled with and 0 elsewhere, so
+    # summing that over all edges out of u writes each of u's vocab_size slots exactly once:
+    # disjointness means no slot is written twice, totality means none is left at 0 by accident.
     G = [np.zeros((vocab_size,), dtype=int) for _ in range(0, num_states)]
     for edge in edges:
         u, v, trans = edge
@@ -176,6 +197,10 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
             vis.add(find(fa, x))
         return len(vis)
 
+    # Step 1 -- the initial (coarsest) partition: accept states in one group, the rest in the
+    # other. These two are already known to be distinguishable, by the empty continuation:
+    # stopping here accepts in one group and rejects in the other. The first accept state we
+    # see becomes the root of the accept group; likewise for the non-accept group.
     fa = np.zeros((num_states,), dtype=int)
     root_accept, root_non_accept = None, None
     for state, u in state2idx.items():
@@ -187,10 +212,16 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
             if root_non_accept is None:
                 root_non_accept = u
             fa[u] = root_non_accept
-    fa_num = count(fa)
+    fa_num = count(fa) # how many groups we currently have (2, or 1 in degenerate cases)
+    # fa_G[u][t] is the *group* reached from u on token t, i.e. row u is the "signature" of
+    # state u under the current partition. Fancy-indexing fa with the whole transition table
+    # computes all num_states x vocab_size entries in one numpy call.
     fa_G = fa[G]
 
+    # Step 2/3 -- refine until stable.
     while True:
+        # Bucket the states by their current group root, so we only ever compare states that
+        # are still believed to be equivalent.
         partitions = {}
         for u in range(0, num_states):
             fu = find(fa, u)
@@ -198,7 +229,12 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
                 partitions[fu] = []
             partitions[fu].append(u)
 
+        # Re-derive the grouping from scratch: every state starts alone in its own group...
         fa_new = np.arange(0, num_states, dtype=int)
+        # ...then, within each old group, re-unite only the states whose signatures agree.
+        # A pair with differing signatures has a token that sends them to different groups,
+        # which proves they are distinguishable, so they are left in separate groups -- that
+        # is the split. Done by brute-force pairwise comparison, O(|group|^2) per group.
         for _, partition in partitions.items():
             for i, u in enumerate(partition):
                 for j in range(i+1, len(partition)):
@@ -207,13 +243,19 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
                         fu, fv = find(fa_new, u), find(fa_new, v)
                         fa_new[fu] = fv
 
+        # Groups only ever get split, never merged, so the group count only goes up (and is
+        # capped at num_states, hence termination). A pass that splits nothing means the
+        # partition is stable: the groups are exactly the equivalence classes.
         fa_new_num = count(fa_new)
         if fa_new_num == fa_num:
             break
         fa = fa_new
         fa_num = fa_new_num
-        fa_G = fa[G]
+        fa_G = fa[G] # signatures must be recomputed against the finer partition
 
+    # Rebuild the DFA over the equivalence classes: each state is replaced by its group root,
+    # and edges that collapse onto the same (merged source, merged destination) pair have
+    # their token bitsets OR'd together into one edge.
     edge2transition = {}
     for edge in edges:
         u, v, transition = edge
@@ -222,6 +264,9 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
             edge2transition[(u, v)] = np.zeros((vocab_size,), dtype=bool)
         edge2transition[(u, v)] |= transition
 
+    # The states of the returned DFA are the group roots. Accept and non-accept states were
+    # never put in the same group, so a group is either wholly accepting or wholly rejecting
+    # and mapping the accept states through find is unambiguous.
     edges_ = [(k[0], k[1], v) for k, v in edge2transition.items()]
     initial_state_ = find(fa, state2idx[initial_state])
     accept_states_ = set(find(fa, state2idx[state]) for state in accept_states)
@@ -410,11 +455,21 @@ class KMPBuilder:
 
     def build(self, pat):
         """Build a DFA accepting any sequence that contains `pat` as a contiguous subsequence."""
+        # Every state is a match length: state u means "the longest prefix of pat that is also a
+        # suffix of the tokens read so far has length u". That gives len(pat) + 1 states, with 0
+        # the initial state (nothing matched) and len(pat) the accept state (pattern found).
+        # Reading a token then asks a single question -- what is the new longest prefix-suffix? --
+        # which is exactly what KMP's prefix function answers, so the transitions come for free.
+        # The construction keeps each state's outgoing labels disjoint and covering the whole
+        # vocab, the invariant DFA_minimize and DFA_prod_binary rely on downstream.
 
         def compute_lps_i(pattern, lps, l, x):
             """Advance the KMP prefix-function state l on reading token x."""
+            # x is the token the current match wants next, so the match grows by one.
             if x == pattern[l]:
                 l += 1
+            # Otherwise fall back to successively shorter prefix-suffixes until one of them can be
+            # extended by x, or until nothing is left to salvage (l == 0).
             else:
                 while l != 0:
                     l = lps[l - 1]
@@ -425,6 +480,8 @@ class KMPBuilder:
 
         def compute_lps(pattern):
             """Compute the longest-proper-prefix-suffix table of the pattern."""
+            # Built by running the pattern through itself: on reaching index i, l is already the
+            # answer for pattern[:i], so advancing it by pattern[i] yields lps[i].
             m = len(pattern)
             lps = [0] * m
             l = 0
@@ -435,14 +492,22 @@ class KMPBuilder:
 
         lps = compute_lps(pat)
 
+        # Only tokens occurring in pat can ever extend a match; the rest are handled in bulk below,
+        # which keeps the edge count proportional to len(pat) rather than to vocab_size.
         pat_tokens_set = set(pat)
         candidate_tokens = set2npset(pat_tokens_set, self.vocab_size)
 
+        # Accumulate transitions as {(u, v) -> bitset of the tokens that move u to v}.
         E = {}
         for u in range(0, len(pat)):
             for token in pat_tokens_set:
+                # The token pat expects next: advance one state.
                 if token == pat[u]:
                     v = u + 1
+                # Any other pattern token breaks the match. u tokens are matched, so the string in
+                # hand is pat[:u], whose own longest prefix-suffix is lps[u-1] -- retry from there
+                # and let compute_lps_i cascade further back if that fails too. At u == 0 there is
+                # no match to salvage (and lps[-1] would silently wrap around).
                 else:
                     v = 0 if u == 0 else compute_lps_i(pat, lps, lps[u-1], token)
 
@@ -450,12 +515,18 @@ class KMPBuilder:
                     E[(u, v)] = np.zeros((self.vocab_size,), dtype=bool)
                 E[(u, v)][token] = 1
 
+            # Every non-empty prefix of pat ends in a token of pat, so a token appearing nowhere in
+            # pat cannot end any prefix and drops the match straight to 0. One edge covers them all.
             if (u, 0) not in E:
                 E[(u, 0)] = np.zeros((self.vocab_size,), dtype=bool)
             E[(u, 0)] |= ~candidate_tokens
 
+        # The accept state absorbs everything: once pat has appeared no later token can undo it.
+        # This self-loop is what turns "ends with pat" into "contains pat".
         E[(len(pat), len(pat))] = np.ones((self.vocab_size,), dtype=bool)
 
+        # Flatten to the edge list format, dropping any (u, 0) entry that ended up empty -- which
+        # happens when pat uses the whole vocab and no pattern token sends u back to 0.
         edges = []
         for e, transition in E.items():
             if transition.any():
@@ -482,10 +553,22 @@ class AhoCorasickBuilder:
 
     def remove_redundant_patterns(self, patterns):
         """Deduplicate patterns and drop any pattern that contains another one as a contiguous subsequence."""
-        vis = set()
+        # The language is "contains at least one pattern", so if a contains b then every sequence
+        # containing a already contains b, and a can be dropped without changing the language.
+        # This is load-bearing rather than an optimization: it guarantees no surviving pattern is a
+        # substring of another, which is exactly what lets build() skip Aho-Corasick output links.
+        # See the comment on the trans loop below.
+        #
+        # Substring testing is done on the comma-joined form. NOTE this does not respect token
+        # boundaries -- with multi-digit token ids, "1" is found inside "11,2" and pattern [11, 2]
+        # is wrongly dropped in favour of [1].
+        vis = set() # vis -- patterns to discard
         patterns = set(','.join(str(x) for x in pattern) for pattern in patterns)
         patterns = list(patterns)
 
+        # Pairwise containment test; a pattern is marked whenever it contains some other pattern.
+        # Transitivity keeps this consistent -- if a contains b and b contains c, both a and b are
+        # dropped and c survives, which still covers a and b.
         for i, a in enumerate(patterns):
             for j in range(i+1, len(patterns)):
                 b = patterns[j]
@@ -500,6 +583,10 @@ class AhoCorasickBuilder:
 
     def build(self, patterns):
         """Build a DFA accepting any sequence that contains at least one of `patterns`."""
+        # This is KMPBuilder generalised from one pattern to several. States are trie nodes, each
+        # labelled by the prefix that reaches it (a tuple of tokens), and the state after reading
+        # some input is the longest pattern-prefix that is also a suffix of that input. Fail links
+        # play the role lps played for a single pattern: where to drop back to on a mismatch.
         vocab_size = self.vocab_size
 
         # WLOG remove unnecessary patterns
@@ -507,6 +594,12 @@ class AhoCorasickBuilder:
         patterns_set = set([tuple(x) for x in patterns])
 
         # first build trie
+        # T[u][token] -> child node. Nodes are the prefix tuples themselves, so the root is () and
+        # a node's label doubles as its identity. candidate_tokens collects every token appearing
+        # in any pattern; as in KMPBuilder, all other tokens are handled in bulk further down.
+        # Since no pattern is a prefix of another (remove_redundant_patterns saw to that), the
+        # pattern nodes are exactly the leaves, and the trailing T[cur_state] = {} never clobbers
+        # an existing child dict.
         T = {}
         candidate_tokens = set()
         for pattern in patterns:
@@ -520,6 +613,17 @@ class AhoCorasickBuilder:
             T[cur_state] = {}
 
         # augment T to be Aho-Corasick automaton
+        # Two things happen in this one BFS pass:
+        #   1. fail[v] is filled in -- the node for the longest proper suffix of v that is still a
+        #      pattern prefix, i.e. where to resume when v's branch dies.
+        #   2. T[u] is completed into a total goto function: for a token u has no real trie child
+        #      for, u borrows wherever its fail state goes. After this, following T never needs to
+        #      consult fail at run time, which is what makes the result a plain DFA.
+        # Correctness rests on level order: fail[u] is always shallower than u, so by the time u is
+        # dequeued its fail state has been dequeued and its T row is already total. The root is the
+        # exception -- it is never enqueued, so T[()] keeps only its real children and the
+        # `token in T[fail_u]` guard is what covers that case (falling back to the root itself).
+        # Note the loop iterates candidate_tokens, not T[u], so filling T[u] in place is safe.
         Q = Queue()
         fail = {tuple():tuple()}
         for _, v in T[tuple()].items():
@@ -527,14 +631,25 @@ class AhoCorasickBuilder:
         while not Q.empty():
             u = Q.get()
             for token in candidate_tokens:
+                # Real trie edge: keep it, and derive the child's fail link from u's.
+                # Depth-1 nodes are enqueued without a fail entry; `u in fail` defaults them to the
+                # root, which is correct since a single token has no proper non-empty suffix.
                 if token in T[u]:
                     fail_u = fail[u] if u in fail else tuple()
                     fail[T[u][token]] = T[fail_u][token] if token in T[fail_u] else tuple()
                     Q.put(T[u][token])
+                # No real trie edge: splice in the fail transition as a direct goto edge.
                 else:
                     fail_u = fail[u] if u in fail else tuple()
                     T[u][token] = T[fail_u][token] if token in T[fail_u] else tuple()
 
+        # Convert the goto table into the (u, v) -> bitset edge format, merging every token that
+        # takes u to the same v onto one edge.
+        # Pattern nodes are skipped here and given absorbing self-loops below, so their outgoing
+        # goto rows are discarded. This is also where the no-pattern-is-a-substring-of-another
+        # precondition pays off: it means no node's fail chain ever runs through a pattern node, so
+        # a match can only be reported by arriving at a pattern node directly and the usual
+        # Aho-Corasick output links are unnecessary.
         trans = {}
         for u in T:
             if u in patterns_set:
@@ -545,6 +660,9 @@ class AhoCorasickBuilder:
                     trans[(u, v)] = np.zeros((vocab_size,), dtype=bool)
                 trans[(u, v)][token] = 1
                 other_tokens[token] = 0
+            # Whatever T[u] did not cover goes back to the root: tokens outside candidate_tokens
+            # (they cannot end any pattern prefix) plus, at the root, its own non-child tokens.
+            # OR'd in because a candidate token may already route u to the root.
             if other_tokens.any():
                 if (u, tuple()) not in trans:
                     trans[(u, tuple())] = other_tokens
@@ -552,6 +670,8 @@ class AhoCorasickBuilder:
                     trans[(u, tuple())] |= other_tokens
 
         edges = [(k[0], k[1], v) for k, v in trans.items()]
+        # Accept states absorb everything -- once a pattern has appeared no later token can undo
+        # it, which is what turns "ends with a pattern" into "contains a pattern".
         for pattern in patterns_set:
             edges.append((pattern, pattern, np.ones((vocab_size,), dtype=bool))) # add self-loops for leaf nodes
 
