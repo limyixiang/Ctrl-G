@@ -5,6 +5,7 @@ from queue import Queue
 
 
 def set2npset(A, n):
+    """Convert an iterable of token ids into a length-n boolean bitset, where n is the vocabulary size."""
     res = np.zeros((n,), dtype=bool)
     for x in A:
         res[x] = 1
@@ -12,6 +13,13 @@ def set2npset(A, n):
 
 
 def edges2G(edges, reverse=False):
+    """Build an adjacency list from edges, optionally with all edges reversed.
+    edges: (u, v, transition)
+    u: source state
+    v: dst state
+    transition: edge label, a length-vocab size boolean np bitset (built by set2npset)
+        marking every token that moves the DFA from u to v.
+    """
     G = {}
     for edge in edges:
         u, v, transition = edge
@@ -25,6 +33,7 @@ def edges2G(edges, reverse=False):
 
 
 def edges2states(edges):
+    """Return the set of all states appearing as an endpoint of some edge."""
     states = set()
     for edge in edges:
         u, v, _ = edge
@@ -34,6 +43,7 @@ def edges2states(edges):
 
 
 def edges2dict(edges):
+    """Index the edges by (source, destination) pair, mapping to their transition bitset."""
     res = {}
     for edge in edges:
         u, v, transition = edge
@@ -42,12 +52,17 @@ def edges2dict(edges):
 
 
 def DFA_remove_unreachable_states(A):
+    """Drop states (and their edges) that cannot be reached from the initial state.
+    A: dict containing 'edges', 'initial_state' and 'accept_states'
+    Returns dict with same keys.
+    """
     edges = A['edges']
     initial_state = A['initial_state']
     accept_states = A['accept_states']
 
+    # find a set of reachable states
     G = edges2G(edges)
-    vis = set()
+    vis = set() # vis -- visited
     Q = Queue()
     Q.put(initial_state)
     vis.add(initial_state)
@@ -58,6 +73,7 @@ def DFA_remove_unreachable_states(A):
                 vis.add(v)
                 Q.put(v)
 
+    # keep only usable edges and reachable accept states
     edges_ = [edge for edge in edges
         if (edge[0] in vis and edge[1] in vis)]
     accept_states_ = set([state for state in accept_states
@@ -72,10 +88,11 @@ def DFA_remove_unreachable_states(A):
 
 # light-weight version for DFA_merge_undistinguishable_states
 def DFA_merge_dead_states(A):
+    """Collapse all states that cannot reach an accept state into a single dead state."""
     edges = A['edges']
     initial_state = A['initial_state']
     accept_states = A['accept_states']
-    vocab_size = edges[0][2].shape[0]
+    vocab_size = edges[0][2].shape[0] # shape of transition (vocab_size,) -> 1-D array
 
     G_rev = edges2G(edges, reverse=True)
     vis = set()
@@ -95,7 +112,7 @@ def DFA_merge_dead_states(A):
     dead_state = -1
     assert dead_state not in vis
 
-    G = {}
+    G = {} # accumulator {live src state -> bitset of every token that leads from u to dead state}
     edges_ = []
     edges_.append((dead_state, dead_state, np.ones((vocab_size,), dtype=bool)))
     for edge in edges:
@@ -119,6 +136,7 @@ def DFA_merge_dead_states(A):
 
 
 def DFA_merge_undistinguishable_states(A, device='cpu'):
+    """Merge equivalent states via partition refinement (Hopcroft-style, union-find based)."""
     edges = A['edges']
     initial_state = A['initial_state']
     accept_states = A['accept_states']
@@ -132,6 +150,12 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
                 state2idx[x] = num_states
                 num_states += 1
 
+    # G[u][t] is the index of the state you reach by reading token t in state u.
+    # This works because of two DFA invariants:
+    # 1. Determinism: For each state, the bitsets on its outgoing edges are pairwise disjoint.
+    #    No token appears on two edges out of the same state.
+    # 2. Totality: For each state, the bitsets on its outgoing edges OR together to all-True.
+    #    Every token in the vocab has somewhere to go, so the machine never gets stuck mid-sequence.
     G = [np.zeros((vocab_size,), dtype=int) for _ in range(0, num_states)]
     for edge in edges:
         u, v, trans = edge
@@ -139,14 +163,16 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
         G[u] += v * trans
 
     def find(fa, x):
+        """Union-find root lookup with path halving."""
         while x != fa[x]:
             fa[x] = fa[fa[x]]
             x = fa[x]
         return x
 
     def count(fa):
+        """Count the number of distinct groups in the union-find structure."""
         vis = set()
-        for x in range(0, fa.shape[0]):
+        for x in range(0, fa.shape[0]): # fa shape is num_states
             vis.add(find(fa, x))
         return len(vis)
 
@@ -208,6 +234,7 @@ def DFA_merge_undistinguishable_states(A, device='cpu'):
 
 
 def DFA_minimize(A):
+    """Minimize a DFA: prune unreachable states, merge dead states, then merge equivalent states."""
     A = DFA_remove_unreachable_states(A)
     A = DFA_merge_dead_states(A)
     A = DFA_merge_undistinguishable_states(A)
@@ -215,6 +242,7 @@ def DFA_minimize(A):
 
 
 def DFA_size(A):
+    """Return the (number of states, number of edges) of a DFA."""
     edge_cnt = len(A['edges'])
     states = set()
     for edge in A['edges']:
@@ -226,6 +254,7 @@ def DFA_size(A):
 
 
 def DFA_negate(A):
+    """Complement a DFA by swapping accept and non-accept states (assumes total transitions)."""
     edges = A['edges']
     initial_state = A['initial_state']
     accept_states = A['accept_states']
@@ -246,7 +275,9 @@ def DFA_negate(A):
 
 
 def _rename_states(A, f):
+    """Relabel the states of a DFA according to the mapping f; states absent from f are kept as is."""
     def apply(x, f):
+        """Look up x in the renaming map, defaulting to x itself."""
         return f[x] if x in f else x
 
     edges_ = [(
@@ -267,6 +298,7 @@ def _rename_states(A, f):
 
 
 def _reindex_states(A, next_idx=0):
+    """Relabel states to consecutive integers starting at next_idx; return the DFA and the next free index."""
     states = edges2states(A['edges'])
     f = {}
     for state in states:
@@ -276,6 +308,8 @@ def _reindex_states(A, next_idx=0):
 
 
 def _copy_state(A, s, count, next_idx=0):
+    """Add `count` duplicates of state s (same outgoing edges); return the DFA, all copies of s
+    (including s itself) and the next free index."""
     new_edges = []
     new_states = [s]
     new_states.extend([next_idx+i for i in range(0, count)])
@@ -291,6 +325,8 @@ def _copy_state(A, s, count, next_idx=0):
 
 
 def DFA_concatenate_binary(A, B):
+    """Build a DFA accepting the concatenation of the languages of A and B by splicing
+    B's initial state (duplicated once per accept state) onto A's accept states."""
     A, next_idx = _reindex_states(A, next_idx=0)
     B, next_idx = _reindex_states(B, next_idx=next_idx)
 
@@ -311,6 +347,7 @@ def DFA_concatenate_binary(A, B):
 
 
 def DFA_concatenate(dfa_graphs):
+    """Concatenate a list of DFAs in order, folding right with DFA_concatenate_binary."""
     if dfa_graphs == []:
         return []
     if len(dfa_graphs) == 1:
@@ -319,6 +356,7 @@ def DFA_concatenate(dfa_graphs):
 
 
 def DFA_prod_binary(A, B, mode='intersection'):
+    """Build the (minimized) product DFA of A and B, accepting their intersection or union."""
     states_A = edges2states(A['edges'])
     states_B = edges2states(B['edges'])
     states_AB = [(ua, ub) for ua in states_A for ub in states_B]
@@ -355,6 +393,7 @@ def DFA_prod_binary(A, B, mode='intersection'):
 
 
 def DFA_prod(dfa_graphs, mode='intersection'):
+    """Take the intersection or union of a list of DFAs, folding right with DFA_prod_binary."""
     if dfa_graphs == []:
         return []
     if len(dfa_graphs) == 1:
@@ -363,13 +402,17 @@ def DFA_prod(dfa_graphs, mode='intersection'):
 
 
 class KMPBuilder:
+    """Builds DFAs that accept token sequences containing a given pattern, via KMP."""
     def __init__(self, vocab_size):
+        """Store the vocabulary size used to size the transition bitsets."""
         self.vocab_size = vocab_size
 
 
     def build(self, pat):
+        """Build a DFA accepting any sequence that contains `pat` as a contiguous subsequence."""
 
         def compute_lps_i(pattern, lps, l, x):
+            """Advance the KMP prefix-function state l on reading token x."""
             if x == pattern[l]:
                 l += 1
             else:
@@ -381,6 +424,7 @@ class KMPBuilder:
             return l
 
         def compute_lps(pattern):
+            """Compute the longest-proper-prefix-suffix table of the pattern."""
             m = len(pattern)
             lps = [0] * m
             l = 0
@@ -429,12 +473,15 @@ class KMPBuilder:
 
 
 class AhoCorasickBuilder:
+    """Builds DFAs that accept token sequences containing any one of several patterns."""
     def __init__(self, vocab_size):
+        """Store the vocabulary size and a full-vocabulary bitset for transitions."""
         self.vocab_set = np.ones((vocab_size,), dtype=bool)
         self.vocab_size = vocab_size
 
 
     def remove_redundant_patterns(self, patterns):
+        """Deduplicate patterns and drop any pattern that contains another one as a contiguous subsequence."""
         vis = set()
         patterns = set(','.join(str(x) for x in pattern) for pattern in patterns)
         patterns = list(patterns)
@@ -452,6 +499,7 @@ class AhoCorasickBuilder:
 
 
     def build(self, patterns):
+        """Build a DFA accepting any sequence that contains at least one of `patterns`."""
         vocab_size = self.vocab_size
 
         # WLOG remove unnecessary patterns
@@ -518,6 +566,7 @@ class AhoCorasickBuilder:
 class TrivialBuilder:
     def __init__(self, tokenizer, vocab_size,
             eos_token_id=2):
+        """Construct the two-state DFA that accepts every token sequence."""
 
         vocab_set = np.ones((vocab_size,), dtype=bool) # set([x for x in range(0, vocab_size)])
 
@@ -530,12 +579,14 @@ class TrivialBuilder:
 
 
     def build(self):
+        """Return the pre-built DFA graph."""
         return self.dfa_graph
 
 
 # EOS token must be followed by EOS token
 class EOSBuilder:
     def __init__(self, vocab_size, eos_token_id):
+        """Construct the DFA that rejects any sequence emitting a non-EOS token after an EOS token."""
         vocab_set = np.ones((vocab_size,), dtype=bool)
         eos = set2npset([eos_token_id], vocab_size)
         others = ~eos
@@ -552,6 +603,7 @@ class EOSBuilder:
 
 
     def build(self):
+        """Return the pre-built DFA graph."""
         return self.dfa_graph
 
 
@@ -561,6 +613,8 @@ class EOSBuilder:
 # implement your custom WordCountBuilder with this implementation as a reference.
 class WordCountBuilder:
     def __init__(self, tokenizer, vocab_size, sep=[' ', '\n', ',', '.', ':', ';', '\"', '/']):
+        """Classify every token by whether it starts with a separator and whether it contains
+        an alphanumeric character, caching the resulting bitsets used to build the DFA."""
         all_special_ids = set(tokenizer.all_special_ids)
         vocab00, vocab01, vocab10, vocab11 = [np.zeros((vocab_size,), dtype=bool) for _ in range(0, 4)]
         for token_id in range(0, vocab_size):
@@ -595,6 +649,7 @@ class WordCountBuilder:
 
 
     def build(self, min_word_count, max_word_count):
+        """Build a DFA accepting sequences whose word count lies in [min_word_count, max_word_count]."""
         states = []
         states.extend([(k, s) for k in range(0, max_word_count+1) for s in range(0, 2)])
         states.append((max_word_count+1, 0))
@@ -629,7 +684,10 @@ class WordCountBuilder:
 
 
 class DFAModel(nn.Module):
+    """A DFA compiled into tensors, for masking/scoring token transitions during generation."""
     def __init__(self, dfa_graph, vocab_size):
+        """Index the states and edges of dfa_graph and register the state/edge/token masks
+        (VE_mask, EV_mask, T_mask, E2Src, E2Dst) as non-trainable buffers."""
         super().__init__()
 
         edges = dfa_graph['edges']
@@ -688,6 +746,7 @@ class DFAModel(nn.Module):
 
 
     def next_state(self, state, token):
+        """Return the state reached from `state` on reading `token`; exits if no transition exists."""
         for e in self.G[state]:
             v, transition_set = e
             if transition_set[token]:
@@ -697,4 +756,5 @@ class DFAModel(nn.Module):
 
 
     def is_accept(self, state):
+        """Return whether `state` is an accept state."""
         return state in self.accept_states
