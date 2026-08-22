@@ -19,3 +19,11 @@ distillation_vllm/*.log
 # python bytecode
 __pycache__/
 *.pyc
+
+# slurm logs
+logs/
+
+# models
+models/
+
+ctrlg.egg-info
