@@ -43,7 +43,11 @@ torch.set_float32_matmul_precision('high')
 
 @torch.compile
 def logsumexp(A, dim):
-    """torch.logsumexp, wrapped so that it is compiled once and reused at every decoding step."""
+    """torch.logsumexp, wrapped so that it is compiled once and reused at every decoding step.
+    logsumexp(x) = max(x) + log(sum(exp(x - max(x))))
+    x = (1, 2, 3) -> ln(e^1 + e^2 + e^3)
+    logsumexp is the log-space version of 'add up probabilities'.
+    """
     return torch.logsumexp(A, dim)
 
 
