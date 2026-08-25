@@ -25,12 +25,12 @@ declare -A models=(
 for name in "${!models[@]}"; do
   lm_eval \
     --model vllm --gen_kwargs max_gen_toks=4096 \
-    --model_args pretrained="${models[$name]}",enable_thinking=False,tensor_parallel_size=1,dtype=auto,gpu_memory_utilization=0.9,data_parallel_size=1 \
+    --model_args pretrained="${models[$name]}",enable_thinking=True,tensor_parallel_size=1,dtype=auto,gpu_memory_utilization=0.9,data_parallel_size=1 \
     --tasks jsonschema_bench \
     --batch_size auto \
     --apply_chat_template \
     --fewshot_as_multiturn \
-    --output_path results/jsb \
+    --output_path results/jsb/thinking_enabled \
     --log_samples \
     # --limit 10 \
 done

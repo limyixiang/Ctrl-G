@@ -34,7 +34,8 @@ paths=(
 name="${names[$SLURM_ARRAY_TASK_ID]}"
 path="${paths[$SLURM_ARRAY_TASK_ID]}"
 PORT=$((1053 + SLURM_ARRAY_TASK_ID))
-TEST_CATEGORIES="non_live"
+# TEST_CATEGORIES="non_live"
+TEST_CATEGORIES="simple_python,simple_java,simple_javascript,parallel,multiple,parallel_multiple,irrelevance,live_simple,live_multiple,live_parallel,live_parallel_multiple,live_irrelevance,live_relevance,multi_turn_base,multi_turn_miss_func,multi_turn_miss_param,multi_turn_long_context,memory_kv,memory_vector,memory_rec_sum,format_sensitivity" # all except web search (need api)
 
 cleanup() { [[ -n "${VLLM_PID:-}" ]] && kill "$VLLM_PID" 2>/dev/null; }
 trap cleanup EXIT
