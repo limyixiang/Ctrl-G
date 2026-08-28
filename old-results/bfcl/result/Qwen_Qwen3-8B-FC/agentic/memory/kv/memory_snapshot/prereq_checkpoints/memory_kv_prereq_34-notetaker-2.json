@@ -1,0 +1,22 @@
+{
+    "core_memory": {
+        "dentist_appointment_schedule": "Schedule dentist appointment.",
+        "gym_stick_to_3x": "Stick to gym 3x this week.",
+        "call_mom": "Call mom\u2014it\u2019s been a while.",
+        "dishes_wash_night": "Wash dishes tonight before it piles up.",
+        "laundry_separate_colors": "Separate colors, don\u2019t mix whites.",
+        "sink_leaky_fix": "Fix leaky sink in the kitchen\u2014YouTube how-to if needed.",
+        "trash_take_out": "Take out trash Wednesday morning."
+    },
+    "archival_memory": {
+        "team_meeting_duration": "Meeting ran over by 30 minutes",
+        "it_security_update": "Change passwords due to updated security protocols",
+        "client_call_jacob": "Client call delayed till Wednesday",
+        "system_downtime": "System downtime from 10 AM - 12 PM, slowed down workflow",
+        "hr_benefits_package": "Review updated benefits package before next month\u2019s deadline",
+        "vendor_email_follow_up": "Sent follow-up emails to vendors, waiting on response",
+        "presentation_tweaks": "Presentation to leadership went well, but need to tweak a few slides for next week\u2019s review",
+        "client_proposal_approval": "Client proposal draft ready\u2014send it for legal approval",
+        "new_hire_onboarding": "Need to onboard new hire\u2014schedule one-on-one"
+    }
+}

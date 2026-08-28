@@ -1,0 +1,20 @@
+{
+    "core_memory": {
+        "diabetes_diagnosis_year": "10 years ago",
+        "management_strategies": "Diet modifications(low sugar/carb intake), regular physical activity(30-minute walks post-dinner), blood sugar monitoring, lifestyle adjustments",
+        "exercise_routine_details": "Consistent exercise routine: walking(low-impact for osteoarthritis, blood sugar control), yoga(flexibility, joint pain relief), stationary bike/at-home workouts on bad weather days. Prioritize consistency over intensity.",
+        "sleep_hygiene_practices": "Prioritize sleep for blood pressure, joint health, and energy. Avoid caffeine after 3 PM, keep bedroom cool/dark, read books instead of phone before bed.",
+        "social_connections_importance": "Prioritize social connections for mental well-being. Weekly coffee with friends and book club membership enhance engagement and support system. Staying socially active contributes to feeling young and connected.",
+        "cognitive_health_strategies": "Engage in puzzles, reading, and online art history classes for mental sharpness. Lifelong learning supports cognitive health and prevents decline.",
+        "chronic_pain_management": "Manage osteoarthritis with warm Epsom salt baths, heating pads, and tai chi/stretching. Focus on managing discomfort for continued activity."
+    },
+    "archival_memory": {
+        "osteoarthritis_affected_areas": "Knees and hands, with flare-ups during weather changes",
+        "osteoarthritis_treatment_approaches": "Physical therapy(initially skeptical but effective), glucosamine supplements(uncertain efficacy), ergonomic adjustments(chairs, shoes), activity modification to avoid joint overuse",
+        "osteoarthritis_management_strategies": "Lifestyle changes including weather-aware activity planning, joint protection techniques, and regular monitoring of pain patterns",
+        "hypothyroidism_diagnosis_details": "Diagnosed in early 40s due to persistent fatigue, unexplained weight gain, and initial misattribution to aging; managed with thyroid hormone replacement medication, requiring gradual dosage adjustments over time; regular doctor check-ins essential for maintenance",
+        "gallbladder_surgery_details": "Gallbladder removal due to severe gallbladder attack from long-standing gallstones; post-surgery dietary restrictions(no fried/greasy foods); altered digestion patterns; recovery period with adjusted eating habits",
+        "seasonal_allergies_details": "Severe spring allergies in Kansas due to high pollen levels; impacts daily activities and requires proactive management(e.g., air filters, antihistamines)",
+        "pneumonia_history": "Hospitalized for pneumonia a couple years ago(prolonged recovery); now prioritizes annual flu shots and pneumonia vaccines due to awareness of infection risks in aging body"
+    }
+}

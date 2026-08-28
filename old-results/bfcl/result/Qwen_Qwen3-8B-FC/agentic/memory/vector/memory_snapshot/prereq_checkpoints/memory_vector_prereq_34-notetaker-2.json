@@ -1,0 +1,18 @@
+{
+    "core_memory": {
+        "next_id": 31,
+        "store": {
+            "24": "Refill windshield wiper fluid.",
+            "25": "Organizing: Sort through closet\u2014donate old clothes.",
+            "26": "Shred old mail.",
+            "27": "Restock pantry\u2014running low on rice and cereal.",
+            "28": "DIY Fixes: Tighten loose cabinet handle.",
+            "29": "Replace bathroom lightbulb.",
+            "30": "Patch up minor wall scuffs."
+        }
+    },
+    "archival_memory": {
+        "next_id": 0,
+        "store": {}
+    }
+}

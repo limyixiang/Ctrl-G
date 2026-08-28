@@ -1,0 +1,18 @@
+{
+    "core_memory": {
+        "next_id": 7,
+        "store": {
+            "0": "Type 2 Diabetes: Metformin 1000mg BID + semaglutide(Ozempic) low dose. A1C 6.9%, fasting BG 125-130 mg/dL. Diet: Whole grains, lean proteins, veggies. Meals: Greek yogurt/nuts, grilled chicken salad, vegetable soup. Carb adjustments based on activity/sugar monitoring.",
+            "1": "Hypertension: Losartan 50 mg daily. BP 135-140/80-90 mmHg. Avoid frequent meloxicam(NSAID kidney risk). Thyroid med separate from calcium/iron for absorption. Stress management, sodium reduction, magnesium, exercise, sleep, hydration.",
+            "2": "Osteoarthritis: Acetaminophen as needed; intermittent meloxicam 7.5 mg for flare-ups. Glucosamine tried with mixed results. Management: Physical therapy, ergonomic adjustments, supportive footwear, joint protection, yoga, low-impact walking.",
+            "3": "Hypothyroidism: Levothyroxine 75 mcg daily on empty stomach(30-min wait before eating). TSH 2.1 mIU/L(normal). Pill organizer ensures adherence; missed doses cause sluggishness. No dosage changes needed; regular check-ins maintain stability.",
+            "4": "Gallbladder removed due to severe gallstones and attacks. Post-surgery dietary restrictions: avoid fried/greasy foods. Digestive changes require careful meal planning.",
+            "5": "Preventative care: Annual check-ups, flu/pneumonia/RSV vaccines, mammograms, bone density monitoring. Added: Vitamin D3 2000 IU, calcium + K2, atorvastatin 10 mg(LDL 130, triglycerides 140), multivitamin, omega-3, probiotics. Digestive enzymes post-gallbladder removal for fatty foods.",
+            "6": "Juggling multiple doctors(endocrinologist, primary care, arthritis specialist). Use notebook to track appointments, medication changes, and symptoms. Prefer physical notes over online portals. Added: Motivation strategies\u2014self-compassion, consistency over perfection, grace on off days."
+        }
+    },
+    "archival_memory": {
+        "next_id": 0,
+        "store": {}
+    }
+}

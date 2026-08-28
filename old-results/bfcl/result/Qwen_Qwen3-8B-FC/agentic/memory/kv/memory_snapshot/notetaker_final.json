@@ -1,0 +1,22 @@
+{
+    "core_memory": {
+        "annual_physical_scheduled": "Annual physical next month; schedule bloodwork by October 15th",
+        "dentist_appointment_overdue": "Dentist appointment overdue; need to call for an opening immediately",
+        "eye_exam_needed": "Eye exam required due to screen strain; prioritize by October 20th",
+        "gym_visits_weekly": "Gym 3x this week; focus on strength training(legs and back)",
+        "daily_steps_goal": "Aim for 10,000 steps daily to maintain activity level",
+        "stretching_routine": "Stretch hamstrings before bed to alleviate tension",
+        "diet_sugar_reduction": "Reduce sugar intake; limit soda consumption to cut back on added sugars"
+    },
+    "archival_memory": {
+        "team_meeting_duration": "Meeting ran over by 30 minutes",
+        "it_security_update": "Change passwords due to updated security protocols",
+        "client_call_jacob": "Client call delayed till Wednesday",
+        "system_downtime": "System downtime from 10 AM - 12 PM, slowed down workflow",
+        "hr_benefits_package": "Review updated benefits package before next month\u2019s deadline",
+        "vendor_email_follow_up": "Sent follow-up emails to vendors, waiting on response",
+        "presentation_tweaks": "Presentation to leadership went well, but need to tweak a few slides for next week\u2019s review",
+        "client_proposal_approval": "Client proposal draft ready\u2014send it for legal approval",
+        "new_hire_onboarding": "Need to onboard new hire\u2014schedule one-on-one"
+    }
+}

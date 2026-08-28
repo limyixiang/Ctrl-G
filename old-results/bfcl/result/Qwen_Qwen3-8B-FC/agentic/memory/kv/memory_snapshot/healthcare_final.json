@@ -1,0 +1,35 @@
+{
+    "core_memory": {
+        "diabetes_diagnosis_year": "10 years ago",
+        "seasonal_health_adjustments": "Adjust exercise routines seasonally: indoor activities(yoga, stationary bike) in winter; outdoor walks and stretching in summer. Increase fluid intake during heatwaves, and use heating pads for joint pain in colder months. Adjust carbohydrate intake based on seasonal energy fluctuations.",
+        "cholesterol_results": "Total cholesterol: 195 mg/dL(normal <200 mg/dL), LDL: 130 mg/dL(target <100 mg/dL), HDL: 58 mg/dL(good range), triglycerides: 140 mg/dL(slightly elevated). Doctor advised increasing healthy fats(avocados, nuts) and reducing saturated fats to improve lipid profile.",
+        "vitamin_d_status": "Vitamin D level: 22 ng/mL(deficient, normal range 30-50 ng/mL). On 2,000 IU daily supplement. Retesting in a few months to monitor improvement. Doctor emphasized sun exposure and dietary sources(fatty fish, fortified foods) alongside supplementation.",
+        "thyroid_function_status": "TSH: 2.1 mIU/L(normal 0.5-4.5 mIU/L), T4: 1.2 ng/dL(within target range). Current levothyroxine dosage effective. Regular monitoring maintained due to history of hypothyroidism. Doctor emphasized consistent medication adherence and periodic rechecks.",
+        "statin_therapy": "Atorvastatin 10 mg daily for LDL 130 mg/dL and triglycerides 140 mg/dL. Cholesterol levels improving with no reported side effects(e.g., muscle aches). Low-dose statin chosen to minimize adverse effects.",
+        "medication_interactions": "Losartan and meloxicam(NSAID) interaction: NSAIDs may affect kidney function, so meloxicam used sparingly. Levothyroxine taken separately from calcium/iron to avoid absorption interference."
+    },
+    "archival_memory": {
+        "osteoarthritis_affected_areas": "Knees and hands, with flare-ups during weather changes",
+        "osteoarthritis_treatment_approaches": "Physical therapy(initially skeptical but effective), glucosamine supplements(uncertain efficacy), ergonomic adjustments(chairs, shoes), activity modification to avoid joint overuse",
+        "osteoarthritis_management_strategies": "Lifestyle changes including weather-aware activity planning, joint protection techniques, and regular monitoring of pain patterns",
+        "hypothyroidism_diagnosis_details": "Diagnosed in early 40s due to persistent fatigue, unexplained weight gain, and initial misattribution to aging; managed with thyroid hormone replacement medication, requiring gradual dosage adjustments over time; regular doctor check-ins essential for maintenance",
+        "gallbladder_surgery_details": "Gallbladder removal due to severe gallbladder attack from long-standing gallstones; post-surgery dietary restrictions(no fried/greasy foods); altered digestion patterns; recovery period with adjusted eating habits",
+        "seasonal_allergies_details": "Severe spring allergies in Kansas due to high pollen levels; impacts daily activities and requires proactive management(e.g., air filters, antihistamines)",
+        "pneumonia_history": "Hospitalized for pneumonia a couple years ago(prolonged recovery); now prioritizes annual flu shots and pneumonia vaccines due to awareness of infection risks in aging body",
+        "seasonal_health_adjustments": "Adjust exercise routines seasonally: indoor activities(yoga, stationary bike) in winter; outdoor walks and stretching in summer. Increase fluid intake during heatwaves, and use heating pads for joint pain in colder months. Adjust carbohydrate intake based on seasonal energy fluctuations.",
+        "hypertension_management": "Regular blood pressure monitoring, low-sodium diet, and stress management techniques. Monitor more frequently during seasonal changes due to Kansas climate impacts on blood pressure and energy levels.",
+        "cholesterol_results": "Total cholesterol: 195 mg/dL(normal <200 mg/dL), LDL: 130 mg/dL(target <100 mg/dL), HDL: 58 mg/dL(good range), triglycerides: 140 mg/dL(slightly elevated). Doctor advised increasing healthy fats(avocados, nuts) and reducing saturated fats to improve lipid profile.",
+        "vitamin_d_status": "Vitamin D level: 22 ng/mL(deficient, normal range 30-50 ng/mL). On 2,000 IU daily supplement. Retesting in a few months to monitor improvement. Doctor emphasized sun exposure and dietary sources(fatty fish, fortified foods) alongside supplementation.",
+        "thyroid_function_status": "TSH: 2.1 mIU/L(normal 0.5-4.5 mIU/L), T4: 1.2 ng/dL(within target range). Current levothyroxine dosage effective. Regular monitoring maintained due to history of hypothyroidism. Doctor emphasized consistent medication adherence and periodic rechecks.",
+        "bone_density_status": "Spine T-score: -1.8 (osteopenia), Hip T-score: -1.5 (borderline osteopenia). Doctor advised strength training and calcium intake. Dietary changes: increased dairy, leafy greens, and calcium supplement with vitamin K2 for absorption. Regular monitoring recommended to prevent progression to osteoporosis.",
+        "blood_glucose_results": "Fasting blood glucose: 135 mg/dL(target <100 mg/dL), A1C: 6.9% (target <6.5%), morning readings: 125-130 mg/dL. Doctor recommended increased fiber intake and light exercise after meals to improve glucose control.",
+        "blood_pressure_management": "Current reading: 138/85 mmHg(target <130/80 mmHg). Home readings fluctuate between 135-140/80-90 mmHg, influenced by stress and sodium intake. Active interventions: reducing sodium, increased water consumption. Doctor emphasizes lifestyle adjustments to lower cardiovascular risk.",
+        "management_strategies": "Diet modifications(low sugar/carb intake, increased fiber), regular physical activity(30-minute walks post-dinner, light exercise after meals), blood sugar monitoring, lifestyle adjustments. Prioritize fiber-rich foods and post-meal activity to manage glucose spikes.",
+        "chronic_pain_management": "Manage osteoarthritis with warm Epsom salt baths, heating pads, and tai chi/stretching. Focus on managing discomfort for continued activity.",
+        "cognitive_health_strategies": "Engage in puzzles, reading, and online art history classes for mental sharpness. Lifelong learning supports cognitive health and prevents decline.",
+        "social_connections_importance": "Prioritize social connections for mental well-being. Weekly coffee with friends and book club membership enhance engagement and support system. Staying socially active contributes to feeling young and connected.",
+        "exercise_routine_details": "Consistent exercise routine: walking(low-impact for osteoarthritis, blood sugar control), yoga(flexibility, joint pain relief), stationary bike/at-home workouts on bad weather days. Prioritize consistency over intensity.",
+        "sleep_hygiene_practices": "Prioritize sleep for blood pressure, joint health, and energy. Avoid caffeine after 3 PM, keep bedroom cool/dark, read books instead of phone before bed.",
+        "diabetes_diagnosis_year": "10 years ago"
+    }
+}

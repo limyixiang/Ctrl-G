@@ -1,0 +1,18 @@
+{
+    "core_memory": {
+        "next_id": 7,
+        "store": {
+            "0": "Fourth-year CS major balances coding with sailing. Sailing offers freedom and problem-solving satisfaction, serving as mental reset from academic stress. Hobbies essential for stress relief and maintaining performance.",
+            "1": "Fourth-year CS major balances coding with gym routine. Regular exercise improves physical health, mental clarity, and sleep, enhancing academic performance. Gym provides stress relief and incremental progress satisfaction, similar to coding achievements.",
+            "2": "Fourth-year CS major balances coding with gaming. Gaming provides strategic problem-solving, social connection, and creative exploration through co-op survival games and game development. Enhances mental agility and collaboration skills.",
+            "3": "Fourth-year CS major balances coding with reading. Sci-fi, especially AI-themed books like 'The Infinity Courts', explores tech's ethical implications, blending relaxation with academic reflection.",
+            "4": "Fourth-year CS major schedules hobbies like gym, sailing, gaming, and reading as non-negotiable blocks. Uses Sundays to plan week based on weather, prioritizes 30-minute bedtime reading for wind-down.",
+            "5": "Fourth-year CS major integrates hobbies through combined activities like sailing followed by gaming, highlighting teamwork, problem-solving, and role dynamics in both. Synergy between hobbies enhances skill development and academic perspective.",
+            "6": "Fourth-year CS major integrates academics/hobbies through VR/AR data visualization research, collaborating with grad students on ML-driven dataset compression for real-time VR. Spontaneous brainstorming sessions with lab peers. Balances small increments with sailing, gaming, and reading."
+        }
+    },
+    "archival_memory": {
+        "next_id": 0,
+        "store": {}
+    }
+}

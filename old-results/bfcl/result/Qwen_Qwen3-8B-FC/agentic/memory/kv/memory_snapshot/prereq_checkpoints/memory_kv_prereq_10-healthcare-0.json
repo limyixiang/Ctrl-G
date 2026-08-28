@@ -1,0 +1,20 @@
+{
+    "core_memory": {
+        "diabetes_diagnosis_year": "10 years ago",
+        "management_strategies": "Diet modifications(low sugar/carb intake), regular physical activity(30-minute walks post-dinner), blood sugar monitoring, lifestyle adjustments",
+        "blood_sugar_monitoring_routine": "Regular checks as advised by doctor, with emphasis on post-meal and bedtime readings",
+        "hypertension_family_history": "Runs in family, managed with medication and lifestyle changes",
+        "hypertension_management_strategies": "Medication, diet, light exercise(walking, yoga), indoor workouts, treadmill use in winter",
+        "hypertension_stress_impact": "Stress significantly worsens blood pressure levels",
+        "hypertension_winter_challenges": "Difficulty with outdoor exercise in cold Kansas winters; rely on indoor alternatives like treadmill"
+    },
+    "archival_memory": {
+        "osteoarthritis_affected_areas": "Knees and hands, with flare-ups during weather changes",
+        "osteoarthritis_treatment_approaches": "Physical therapy(initially skeptical but effective), glucosamine supplements(uncertain efficacy), ergonomic adjustments(chairs, shoes), activity modification to avoid joint overuse",
+        "osteoarthritis_management_strategies": "Lifestyle changes including weather-aware activity planning, joint protection techniques, and regular monitoring of pain patterns",
+        "hypothyroidism_diagnosis_details": "Diagnosed in early 40s due to persistent fatigue, unexplained weight gain, and initial misattribution to aging; managed with thyroid hormone replacement medication, requiring gradual dosage adjustments over time; regular doctor check-ins essential for maintenance",
+        "gallbladder_surgery_details": "Gallbladder removal due to severe gallbladder attack from long-standing gallstones; post-surgery dietary restrictions(no fried/greasy foods); altered digestion patterns; recovery period with adjusted eating habits",
+        "seasonal_allergies_details": "Severe spring allergies in Kansas due to high pollen levels; impacts daily activities and requires proactive management(e.g., air filters, antihistamines)",
+        "pneumonia_history": "Hospitalized for pneumonia a couple years ago(prolonged recovery); now prioritizes annual flu shots and pneumonia vaccines due to awareness of infection risks in aging body"
+    }
+}

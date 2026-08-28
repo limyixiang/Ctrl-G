@@ -1,0 +1,13 @@
+{
+    "core_memory": {
+        "next_id": 0,
+        "store": {}
+    },
+    "archival_memory": {
+        "next_id": 2,
+        "store": {
+            "0": "Michael from Seattle, 35, freelance graphic designer, coffee enthusiast. Interested in new kitchen appliances: high-end coffee grinder and $39 storage canister for coffee beans. Previously purchased espresso machine with shipping/damage issues.",
+            "1": "Michael expressed interest in a potential coffee bean subscription service. He wants recommendations paired with grinder settings(espresso, drip, pour-over) and values trust in the brand\u2019s taste. Also mentioned his existing espresso machine and grinder preferences(conical burrs, stainless-steel aesthetic)."
+        }
+    }
+}

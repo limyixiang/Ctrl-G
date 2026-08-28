@@ -1,0 +1,18 @@
+{
+    "core_memory": {
+        "next_id": 7,
+        "store": {
+            "0": "Type 2 Diabetes management: Focus on whole grains, lean proteins, and veggies. Breakfast: Greek yogurt with nuts/berries or eggs + avocado. Lunch: Grilled chicken + salad. Dinner: Homemade vegetable soup. Adjust carb intake based on activity levels and blood sugar monitoring.",
+            "1": "Hypertension managed via medication, diet, stress reduction(5-min morning meditation), exercise(walking, yoga, stationary bike, treadmill), sleep: cool/dark room, caffeine cutoff, reading, and hydration: water bottle, herbal teas over coffee, more in heat. ER visit for high BP emphasized severity.",
+            "2": "Osteoarthritis in knees/hands, worsened by weather changes. Physical therapy helped; glucosamine supplements tried. Lifestyle changes: ergonomic chairs, supportive shoes, joint protection. Added yoga for joint pain and flexibility, low-impact walking routine.",
+            "3": "Hypothyroidism diagnosed early 40s with fatigue, weight gain. Initially attributed to aging. Managed via medication and regular doctor check-ins; dosage adjustment required over time.",
+            "4": "Gallbladder removed due to severe gallstones and attacks. Post-surgery dietary restrictions: avoid fried/greasy foods. Digestive changes require careful meal planning.",
+            "5": "Preventative care: Annual check-ups, flu/pneumonia/RSV vaccines, mammograms, bone density monitoring(family osteoporosis history). Proactive approach to early issue detection.",
+            "6": "Juggling multiple doctors(endocrinologist, primary care, arthritis specialist). Use notebook to track appointments, medication changes, and symptoms. Prefer physical notes over online portals. Added: Motivation strategies\u2014self-compassion, consistency over perfection, grace on off days."
+        }
+    },
+    "archival_memory": {
+        "next_id": 0,
+        "store": {}
+    }
+}

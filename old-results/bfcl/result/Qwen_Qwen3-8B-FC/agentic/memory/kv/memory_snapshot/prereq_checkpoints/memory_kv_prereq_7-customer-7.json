@@ -1,0 +1,17 @@
+{
+    "core_memory": {
+        "user_loyalty_program_interest": "Interest in membership tiers with perks: monthly coffee subscriptions, extended warranties, early access to products, and loyalty rewards for frequent purchases",
+        "user_membership_perks_request": "Request for extended warranty coverage on espresso machines, coffee bean subscription details(sourcing, roast selection, 513mL small-batch options), and fine print clarification on membership terms",
+        "user_account_portal_interest": "Interest in membership account portal features: order tracking, subscription management, shipment pausing, preference adjustments, and delivery address updates",
+        "user_unexpected_charge_concern": "Concern about an unexpected charge on credit card statement; no recent purchases or subscriptions recalled; request investigation into potential recurring charge, warranty-related fee, or account portal billing discrepancy"
+    },
+    "archival_memory": {
+        "user_current_coffee_experience": "using replacement espresso machine with steam wand, noticing taste difference between fresh-ground and pre-ground beans, seeking electric grinder to enhance home coffee experience",
+        "user_grinder_specifications": "prioritizes conical burrs for consistency, grind-size range(fine-coarse), low noise levels, easy cleaning, and stainless-steel aesthetic matching espresso machine",
+        "user_subscription_service_interest": "expressed interest in coffee bean subscription service paired with grinder settings(espresso, drip, pour-over), requested updates on availability and future plans",
+        "user_order_intent": "intends to purchase coffee grinder(conical burr, fine-coarse settings, stainless-steel design) and matching accessories(storage canister, cleaning kit for espresso machine/grinder)",
+        "user_loyalty_program_interest": "inquired about returning customer discounts, loyalty programs, and referral incentives to justify purchases or upgrades",
+        "user_shipping_concerns": "expressed concerns about shipping delays due to Seattle weather, package damage fears, and request for tracking/monitoring options for new order",
+        "user_subscription_interest": "Expressed interest in loyalty program/perks like free shipping, early access, monthly discounts for frequent purchases"
+    }
+}

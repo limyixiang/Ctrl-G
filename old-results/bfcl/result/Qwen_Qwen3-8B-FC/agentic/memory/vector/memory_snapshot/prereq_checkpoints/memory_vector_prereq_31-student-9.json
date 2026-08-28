@@ -1,0 +1,18 @@
+{
+    "core_memory": {
+        "next_id": 15,
+        "store": {
+            "0": "Fourth-year CS major balances coding with sailing. Sailing offers freedom and problem-solving satisfaction, serving as mental reset from academic stress. Hobbies essential for stress relief and maintaining performance.",
+            "1": "Fourth-year CS major balances coding with gym routine. Regular exercise improves physical health, mental clarity, and sleep, enhancing academic performance. Gym provides stress relief and incremental progress satisfaction, similar to coding achievements.",
+            "9": "Schedules classes in late morning/early afternoon(9:30-10:00 AM). Enrolled in Advanced Algorithms, Machine Learning elective, and distributed systems project course. Uses 15-minute commute for lecture recordings or focus playlists to stay ahead.",
+            "11": "Lunch: Turkey/avocado wrap; checks email/Slack for research group(marine traffic computer vision) and hackathon updates. Prioritizes staying informed to meet project milestones and event deadlines.",
+            "12": "Afternoon gym session(45-60 mins) combining cardio/weight training for stress relief and energy. Non-negotiable unless exams/deadlines require prioritization.",
+            "13": "Group project on distributed sensor network system using GitHub; manages tasks via shared project board with due dates and role assignments to ensure accountability and smooth collaboration.",
+            "14": "Prioritizes unified to-do list/calendar for priorities; schedules downtime(e.g., 1 hour for shows, dog play) to recharge, enhancing long-term productivity and focus."
+        }
+    },
+    "archival_memory": {
+        "next_id": 0,
+        "store": {}
+    }
+}

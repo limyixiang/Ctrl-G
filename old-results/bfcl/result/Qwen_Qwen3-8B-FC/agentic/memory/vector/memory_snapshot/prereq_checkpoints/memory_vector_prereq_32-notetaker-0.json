@@ -1,0 +1,18 @@
+{
+    "core_memory": {
+        "next_id": 7,
+        "store": {
+            "0": "Team meeting ran over by 30 minutes. Adjust schedule accordingly.",
+            "1": "Finalize Q1 budget report by Friday. Deadline: Friday.",
+            "2": "IT updated security protocols. Change passwords ASAP.",
+            "3": "Client call with Jacob delayed to Wednesday. Reschedule to Wednesday.",
+            "4": "System downtime from 10 AM - 12 PM. Workflow slowed down.",
+            "5": "HR updated benefits package. Review before next month\u2019s deadline.",
+            "6": "Sent follow-up emails to vendors. Waiting on responses."
+        }
+    },
+    "archival_memory": {
+        "next_id": 0,
+        "store": {}
+    }
+}

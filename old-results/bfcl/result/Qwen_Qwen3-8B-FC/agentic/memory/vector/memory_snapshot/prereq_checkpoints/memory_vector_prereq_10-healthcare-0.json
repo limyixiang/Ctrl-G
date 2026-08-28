@@ -1,0 +1,18 @@
+{
+    "core_memory": {
+        "next_id": 7,
+        "store": {
+            "0": "User has Type 2 Diabetes diagnosed 10 years ago. Key management strategies: dietary changes(low sugar, carb monitoring), regular physical activity(30-minute walk post-dinner), blood sugar monitoring. Doctor guidance has been instrumental in maintaining stability.",
+            "1": "Hypertension managed via medication, diet, stress reduction, and exercise(walking/yoga). Winter challenges prompt treadmill use. ER visit for dangerously high BP emphasized severity.",
+            "2": "Osteoarthritis in knees/hands, worsened by weather changes. Physical therapy helped; glucosamine supplements tried. Lifestyle changes: ergonomic chairs, supportive shoes, joint protection.",
+            "3": "Hypothyroidism diagnosed early 40s with fatigue, weight gain. Initially attributed to aging. Managed via medication and regular doctor check-ins; dosage adjustment required over time.",
+            "4": "Gallbladder removed due to severe gallstones and attacks. Post-surgery dietary restrictions: avoid fried/greasy foods. Digestive changes require careful meal planning.",
+            "5": "Seasonal allergies(spring pollen). Pneumonia history led to regular flu/pneumonia vaccines. Proactive infection prevention due to age-related risks.",
+            "6": "Juggling multiple doctors(endocrinologist, primary care, arthritis specialist) is challenging. Use notebook to track appointments, medication changes, and symptoms. Prefer physical notes over online portals to avoid forgetting."
+        }
+    },
+    "archival_memory": {
+        "next_id": 0,
+        "store": {}
+    }
+}

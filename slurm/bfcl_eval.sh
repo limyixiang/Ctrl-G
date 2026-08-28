@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -J bfcl-eval
-#SBATCH -p gpu
-#SBATCH -t 3:00:00
+#SBATCH -p gpu-long
+#SBATCH -t 10:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
