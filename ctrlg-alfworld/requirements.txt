@@ -1,0 +1,18 @@
+# Core
+torch>=2.3
+numpy
+pyyaml
+
+# Qwen3.5 needs transformers from main at the time of writing:
+#   pip install "transformers @ git+https://github.com/huggingface/transformers.git@main"
+transformers>=4.51
+
+# Environment
+alfworld>=0.4.2
+# after install: pip install alfworld[full] is NOT needed for text-only;
+# download game data with:  alfworld-download   (sets up $ALFWORLD_DATA)
+
+# Ctrl-G (not on PyPI) - clone and install in editable mode:
+#   git clone https://github.com/joshuacnf/Ctrl-G.git
+#   pip install -e Ctrl-G
+# distillation extras: vllm openai faiss-gpu
