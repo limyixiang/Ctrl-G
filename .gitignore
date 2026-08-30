@@ -2,6 +2,7 @@ workspace/*
 distillation/workspace/
 .vscode
 .*
+!.gitattributes
 
 # distillation_vllm: training artifacts and experiment data (not committed)
 distillation_vllm/workspace/
