@@ -94,7 +94,6 @@ When the final receptacle type is also a plausible source location, inspect each
 
 After placing the first object in a pick-two task, do not begin a fresh room/class search. If another required instance was previously seen, return directly to that remembered source location for the second pickup. If no second instance is remembered, continue from the existing unsearched-location ledger rather than revisiting locations already checked before the first placement.
 
-<!-- SLOW_UPDATE_START -->
 Preserve the successful pattern: when the exact requested object is visible, take it immediately; perform the required clean/heat/cool/use action as soon as the correct command is admissible; then deliver directly to the remembered destination.
 
 Treat tool locations as tools, not repeated search targets. If a sinkbasin, fridge, microwave, desklamp, or destination receptacle has already been checked and does not contain the target while you are empty-handed, remember it for later but do not revisit it until you are holding the required object or ready to place/use it.
@@ -110,4 +109,148 @@ For dishsponge clean-and-place tasks, check sinkbasin and nearby countertops onc
 When the step budget is running and you are still empty-handed, prefer any unvisited admissible location over any searched likely location. A location being semantically likely, useful later, or recently mentioned is never a reason to rescan it before acquisition.
 
 Do not let the broadening threshold cause class restarts. Broadening means move to a different unvisited class or continue at the next unsearched instance of a promising storage class; it never means cycling back through exact instances already observed.
-<!-- SLOW_UPDATE_END -->
+
+---
+
+## go to
+
+Move to a receptacle you have seen in the room. No effect if you are already there.
+
+```action
+name: goto
+template: "go to {recep}"
+preconditions:
+  - seen({recep})
+  - not_at({recep})
+```
+
+## take
+
+Pick up an object from the receptacle you are currently at. Your hand must be empty.
+
+```action
+name: take
+template: "take {obj} from {recep}"
+preconditions:
+  - at({recep})
+  - obj_at_current({obj})
+  - hand_empty
+```
+
+## put
+
+Put the object you are holding in/on the receptacle you are currently at.
+
+```action
+name: put
+template: "put {obj} in/on {recep}"
+preconditions:
+  - at({recep})
+  - holding({obj})
+```
+
+## open
+
+Open a closed receptacle (cabinet, drawer, fridge, microwave, safe, ...) you are at.
+
+```action
+name: open
+template: "open {recep}"
+preconditions:
+  - at({recep})
+  - openable({recep})
+  - closed({recep})
+```
+
+## close
+
+Close an open receptacle you are at.
+
+```action
+name: close
+template: "close {recep}"
+preconditions:
+  - at({recep})
+  - openable({recep})
+  - open({recep})
+```
+
+## clean
+
+Clean the object you are holding, using a sinkbasin you are at.
+
+```action
+name: clean
+template: "clean {obj} with {recep}"
+preconditions:
+  - at({recep})
+  - holding({obj})
+  - recep_type({recep}, sinkbasin)
+```
+
+## heat
+
+Heat the object you are holding, using a microwave you are at.
+
+```action
+name: heat
+template: "heat {obj} with {recep}"
+preconditions:
+  - at({recep})
+  - holding({obj})
+  - recep_type({recep}, microwave)
+```
+
+## cool
+
+Cool the object you are holding, using a fridge you are at.
+
+```action
+name: cool
+template: "cool {obj} with {recep}"
+preconditions:
+  - at({recep})
+  - holding({obj})
+  - recep_type({recep}, fridge)
+```
+
+## use
+
+Toggle/use an object at your current location (e.g. turn on a desklamp).
+
+```action
+name: use
+template: "use {obj}"
+preconditions:
+  - obj_at_current({obj})
+```
+
+## examine
+
+Look closely at an object you hold or see, or the receptacle you are at.
+
+```action
+name: examine
+template: "examine {thing}"
+preconditions: []
+```
+
+## look
+
+Look around your current location.
+
+```action
+name: look
+template: "look"
+preconditions: []
+```
+
+## inventory
+
+Check what you are carrying.
+
+```action
+name: inventory
+template: "inventory"
+preconditions: []
+```

@@ -22,7 +22,7 @@ def main():
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
-    env = getattr(environment, config["env"]["type"])(config, train_eval=args.split)
+    env = environment.get_environment(config["env"]["type"])(config, train_eval=args.split)
     env = env.init_env(batch_size=1)
 
     out_dir = Path(args.out)

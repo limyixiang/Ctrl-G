@@ -26,4 +26,5 @@ logs/
 # models
 models/
 
-ctrlg.egg-info
+*.egg-info/
+out/
