@@ -9,5 +9,8 @@ description = "Ctrl-G constrained tool generation on the AlfWorld benchmark"
 requires-python = ">=3.10"
 dependencies = ["numpy", "pyyaml"]
 
+[project.optional-dependencies]
+vllm = ["openai>=1.0"]   # VLLMBackend client
+
 [tool.setuptools.packages.find]
 where = ["src"]

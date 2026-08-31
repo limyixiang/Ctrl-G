@@ -9,13 +9,18 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ctrlg_alfworld import SkillSet, run_episode
-from ctrlg_alfworld.backends import HFBackend
+from ctrlg_alfworld.backends import HFBackend, VLLMBackend
 
 ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
+    ap.add_argument("--backend", default="hf", choices=["hf", "vllm"],
+                    help="hf = in-process transformers; vllm = OpenAI-compatible vLLM server")
+    ap.add_argument("--base_url", default="http://localhost:8000/v1", help="vLLM backend only")
+    ap.add_argument("--tokenizer", default=None,
+                    help="tokenizer path (defaults to --model); useful when --model is a served-model-name")
     ap.add_argument("--hmm", default=None, help="HMM checkpoint (required for constrained mode)")
     ap.add_argument("--mode", default="unconstrained", choices=["unconstrained", "constrained"])
     ap.add_argument("--config", default=str(ROOT / "configs/config_tw.yaml"))
@@ -27,6 +32,8 @@ def main():
 
     if args.mode == "constrained" and args.hmm is None:
         ap.error("--hmm is required for constrained mode")
+    if args.mode == "constrained" and args.backend == "vllm":
+        ap.error("constrained mode needs in-process logits processing; use --backend hf")
 
     import alfworld.agents.environment as environment
 
@@ -36,7 +43,10 @@ def main():
     env = env.init_env(batch_size=1)
 
     skillset = SkillSet.from_file(args.skills)
-    backend = HFBackend(args.model, hmm_path=args.hmm)
+    if args.backend == "vllm":
+        backend = VLLMBackend(args.model, base_url=args.base_url, tokenizer_path=args.tokenizer)
+    else:
+        backend = HFBackend(args.tokenizer or args.model, hmm_path=args.hmm)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
