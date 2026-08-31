@@ -71,7 +71,7 @@ def render_prompt(tokenizer, system_prompt: str, user_prompt: str) -> str:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=True)
 
 
 # ReAct gamefile-prefix -> few-shot key mapping (ysymyth/ReAct alfworld.ipynb)

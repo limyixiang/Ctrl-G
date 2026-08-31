@@ -55,6 +55,9 @@ def run_episode(env, backend, skillset: SkillSet, mode: str = "unconstrained", m
 
     obs = initial_obs
 
+    # if verbose:
+        # print(initial_obs)
+
     for t in range(max_steps):
         admissible_actions = list(info.get("admissible_commands", [[]])[0])
         admissible_actions_str = ", ".join(admissible_actions)
@@ -68,6 +71,9 @@ def run_episode(env, backend, skillset: SkillSet, mode: str = "unconstrained", m
         )
 
         prompt_text = render_prompt(backend.tokenizer, system_prompt, user_prompt)
+
+        if verbose and t == 0:
+            print(user_prompt)
 
         if mode == "unconstrained":
             thought, action, prefix = backend.generate_turn_unconstrained(prompt_text, greedy=greedy)
@@ -86,7 +92,7 @@ def run_episode(env, backend, skillset: SkillSet, mode: str = "unconstrained", m
         steps.append(Step(thought=thought, action=action, observation=obs))
 
         if verbose:
-            print(f"[{t}] {action}\n    {obs}")
+            print(f"[{t}] {thought}\n   {action}\n    {obs}")
 
         if done[0]:
             success = bool(info["won"][0])

@@ -31,6 +31,8 @@ mkdir -p logs
 
 source .venv-alfworld/bin/activate
 
+export TMPDIR=/tmp
+
 # config_tw.yaml holds literal '$ALFWORLD_DATA/...' paths that alfworld expands
 # at load time, so this has to be exported before run_eval.py imports the env.
 export ALFWORLD_DATA="${ALFWORLD_DATA:-$WORKDIR/alfworld_data}"
