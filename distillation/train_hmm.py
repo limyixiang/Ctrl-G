@@ -121,6 +121,10 @@ def train_hmm(rank, world_size,
 
             torch.cuda.empty_cache()
 
+    # Always materialize the final step even when it is not a save interval.
+    if rank == 0:
+        hmm_model.save_pretrained(f'{model_path}/checkpoint-{step_offset}')
+
 
 if __name__ == '__main__':
     arg_parser = argparse.ArgumentParser()
@@ -137,6 +141,7 @@ if __name__ == '__main__':
     arg_parser.add_argument('--em_schedule', type=str)
     arg_parser.add_argument('--dropout', default=0.001, type=float)
     arg_parser.add_argument('--pseudocount', default=0.001, type=float)
+    arg_parser.add_argument('--seed', default=42, type=int)
 
     arg_parser.add_argument('--log_file', default='', type=str)
 
@@ -145,6 +150,9 @@ if __name__ == '__main__':
     dist.init_process_group('nccl')
     rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+    random.seed(args.seed + rank)
+    torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed_all(args.seed + rank)
 
     if rank == 0:
         with open(args.log_file, 'a+') as fout:

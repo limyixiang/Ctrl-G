@@ -26,6 +26,7 @@ logs/
 
 # models
 models/
+alfworld_data/
 
 *.egg-info/
 out/

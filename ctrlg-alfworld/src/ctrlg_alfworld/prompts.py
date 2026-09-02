@@ -3,6 +3,7 @@ from pathlib import Path
 
 ACTION_OPEN, ACTION_CLOSE = "<action>", "</action>"
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
+DECISION_OPEN, DECISION_CLOSE = "<decision>", "</decision>"
 
 SYSTEM_INSTRUCTION = "You are an expert agent operating in the ALFRED Embodied Environment."
 
@@ -25,24 +26,66 @@ class Step:
     thought: str
     action: str
     observation: str
+    decision: str = ""
 
-def build_user_prompt(skill_content: str, task_description: str, current_observation: str, admissible_actions: str, obs_history: list[Step]):
+def build_user_prompt(
+    skill_content: str,
+    task_description: str,
+    current_observation: str,
+    obs_history: list[Step],
+    *,
+    use_decision: bool,
+    admissible_actions: list[str] | None = None,
+    show_admissible_actions: bool = False,
+):
+    """Build one prompt for the matched decision-agent experiment.
+
+    TextWorld's admissible commands stay out of the model-visible prompt in the
+    core experiment. They are passed separately to the decoder to build the
+    DFA. ``show_admissible_actions`` is reserved for a named ceiling/control.
+
+    Native model thinking is enabled by :func:`render_prompt`, so this prompt
+    must not request a second, manually generated ``<think>`` block.
+    """
     parts = []
     skill = SKILL_TEMPLATE.format(skill_content=skill_content)
     parts.append(skill)
 
     recent_obs_history = obs_history[-3:]
     action_history = []
-    for idx, h in enumerate(recent_obs_history):
-        if idx == 0:
-            action_history.append(f"OBS: {h.observation.strip()}")
-        else:
-            if h.thought:
-                action_history.append(f"{THINK_OPEN}{h.thought}{THINK_CLOSE}")
-            action_history.append(f"{ACTION_OPEN}{h.action}{ACTION_CLOSE}")
-            if idx != len(recent_obs_history) - 1:
-                action_history.append(f"OBS: {h.observation.strip()}")
+    for h in recent_obs_history:
+        # Native/hidden reasoning is never replayed. Decision conditions retain
+        # their explicit decisions as persistent memory; no-decision prompts
+        # retain the original action/observation-only history.
+        if use_decision and h.decision.strip():
+            action_history.append(
+                f"{DECISION_OPEN}{h.decision.strip()}{DECISION_CLOSE}"
+            )
+        action_history.append(f"{ACTION_OPEN}{h.action}{ACTION_CLOSE}")
+        action_history.append(f"OBS: {h.observation.strip()}")
     action_history = "\n".join(action_history)
+
+    if show_admissible_actions:
+        actions = admissible_actions or []
+        admissible_actions_section = (
+            "Your admissible actions in the current situation are: "
+            f"[{', '.join(actions)}]."
+        )
+    else:
+        admissible_actions_section = ""
+
+    if use_decision:
+        decision_instruction = (
+            f"After thinking, emit one short decision in {DECISION_OPEN} "
+            f"{DECISION_CLOSE}, then emit exactly one action in "
+            f"{ACTION_OPEN} {ACTION_CLOSE}."
+        )
+    else:
+        decision_instruction = (
+            f"After thinking, emit exactly one action in {ACTION_OPEN} "
+            f"{ACTION_CLOSE}, with no text between the thinking span and "
+            f"{ACTION_OPEN}."
+        )
 
     if len(obs_history) > 0:
         obs_template = _load_md(TEMPLATED_OBS_WITH_HIST_PATH)
@@ -51,13 +94,12 @@ def build_user_prompt(skill_content: str, task_description: str, current_observa
     obs_template = obs_template.format(
         task_description=task_description,
         step_count=len(obs_history),
-        history_length=min(2, len(obs_history)),
+        history_length=min(3, len(obs_history)),
         action_history=action_history,
         current_step=len(obs_history)+1,
         current_observation=current_observation,
-        admissible_actions=admissible_actions,
-        think_open=THINK_OPEN,
-        think_close=THINK_CLOSE,
+        admissible_actions_section=admissible_actions_section,
+        decision_instruction=decision_instruction,
         action_open=ACTION_OPEN,
         action_close=ACTION_CLOSE
     )

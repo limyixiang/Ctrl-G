@@ -19,6 +19,7 @@ def init():
     arg_parser.add_argument('--eos_token_id', type=int)
     arg_parser.add_argument('--kmeans_iterations', default=100, type=int)
     arg_parser.add_argument('--pseudocount', default=0.001, type=float)
+    arg_parser.add_argument('--seed', default=42, type=int)
 
     arg_parser.add_argument('--output_file', default='', type=str)
 
@@ -50,10 +51,10 @@ def load_examples(sequences_file, embeddings_file, eos_token_id):
     return suffixes, suffix_embeddings
 
 
-def Kmeans_faiss(vecs, K, max_iterations=1000, nredo=1, verbose=True):
+def Kmeans_faiss(vecs, K, max_iterations=1000, nredo=1, verbose=True, seed=42):
     kmeans = faiss.Kmeans(vecs.shape[1], K,
         niter=max_iterations, nredo=nredo, verbose=verbose,
-        max_points_per_centroid=vecs.shape[0] // K, gpu=True)
+        max_points_per_centroid=vecs.shape[0] // K, gpu=True, seed=seed)
     kmeans.train(vecs)
 
     return kmeans
@@ -107,6 +108,8 @@ def write_params(alpha_flow, beta_flow, gamma_flow, pseudocount,
 
 def main():
     args = init()
+    numpy.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     hidden_states, vocab_size, eos_token_id = args.hidden_states, args.vocab_size, args.eos_token_id
 
@@ -120,7 +123,10 @@ def main():
     # vecs = numpy.unique(suffix_embeddings, axis=0) # this operation is slow
 
     print(f'training K-means with {hidden_states-1} clusters and {vecs.shape[0]} suffix embeddings ...')
-    kmeans = Kmeans_faiss(vecs, hidden_states - 1, max_iterations=args.kmeans_iterations)
+    kmeans = Kmeans_faiss(
+        vecs, hidden_states - 1,
+        max_iterations=args.kmeans_iterations, seed=args.seed
+    )
 
     print(f'clustering {len(suffixes)} suffix embeddings into {hidden_states-1} clusters ...')
     _, idx2cluster = kmeans.index.search(suffix_embeddings, 1)

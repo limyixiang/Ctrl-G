@@ -3,10 +3,12 @@
 ## Overview
 This skill guides agents operating in the ALFWorld text-based embodied environment.
 The agent must complete household tasks by navigating rooms, interacting with objects,
-and using appliances. Actions must be chosen from the admissible action list provided
-at each step.
+and using appliances. Every emitted action must be admissible in the current
+environment state.
 
-**Output format**: Always output `<think>...</think>` for reasoning, then `<action>...</action>` for the chosen action.
+**Output format**: Use the model's native thinking mode. After thinking, follow
+the current prompt's requested decision/no-decision format and emit exactly one
+chosen action inside `<action>...</action>`.
 
 ---
 

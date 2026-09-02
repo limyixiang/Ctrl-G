@@ -37,9 +37,6 @@ class Skill:
     def placeholders(self) -> list[str]:
         return PLACEHOLDER_RE.findall(self.template)
 
-    def ground(self, domains: dict[str, list[str]], check) -> list[str]:
-        raise NotImplementedError
-
 @dataclass
 class SkillSet:
     skills: list[Skill]
@@ -64,6 +61,3 @@ class SkillSet:
             raise ValueError(f"No ```action blocks found in {path}")
         return cls(skills=skills, raw_markdown=raw)
 
-    def ground_all(self, domains: dict[str, list[str]], check) -> list[str]:
-        raise NotImplementedError
-    
