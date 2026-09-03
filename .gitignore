@@ -30,3 +30,4 @@ alfworld_data/
 
 *.egg-info/
 out/
+results/

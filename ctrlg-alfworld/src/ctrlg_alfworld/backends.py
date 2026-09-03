@@ -514,11 +514,12 @@ class VLLMBackend(BaseBackend):
                 "include_stop_str_in_output": True,
                 "return_token_ids": True,
                 "seed": request_seed,
+                "skip_special_tokens": False,
             },
         )
         latency = time.perf_counter() - started
         choice = response.choices[0]
-        text = choice.text
+        server_text = choice.text
         token_ids = getattr(choice, "token_ids", None)
         if token_ids is None and getattr(choice, "model_extra", None):
             token_ids = choice.model_extra.get("token_ids")
@@ -527,12 +528,20 @@ class VLLMBackend(BaseBackend):
                 "vLLM did not return generated token IDs; use a vLLM version "
                 "supporting return_token_ids or collect with --backend hf"
             )
-        decoded = self.tokenizer.decode(
+        decoded_text = self.tokenizer.decode(
             token_ids, skip_special_tokens=False
         )
-        if decoded != text:
+        # vLLM may truncate its displayed text at the stop string while retaining
+        # the complete generated token that contained that string.
+        if (
+            decoded_text != server_text
+            and not decoded_text.startswith(server_text)
+        ):
             raise ValueError(
-                "vLLM text does not exactly match its returned generated token IDs"
+                "Unexpected vLLM tokenizer mismatch: "
+                f"server_text={server_text!r}, "
+                f"decoded_text={decoded_text!r}, "
+                f"token_ids={token_ids!r}"
             )
         text, token_ids, stop_found = _crop_chunk_at_stop(
             self.tokenizer, list(token_ids), stop_strings

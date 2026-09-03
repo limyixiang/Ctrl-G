@@ -1,17 +1,17 @@
 #!/bin/bash
 #SBATCH -J alfworld-sample
 #SBATCH -p gpu-long
-#SBATCH -t 12:00:00
+#SBATCH -t 72:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:h100-96:1
+#SBATCH --gres=gpu:h100-47:1
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.err
 
 # to run a 1-sample test:
-#   SHOW_ADMISSIBLE_ACTIONS=1 EPISODES=1 SAMPLES_PER_STATE=1 OUTPUT=results/alfworld/pilot_actions_shown sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
+#   SHOW_ADMISSIBLE_ACTIONS=1 EPISODES=1 SAMPLES_PER_STATE=1 OUTPUT=results/alfworld/pilot_actions_shown sbatch -t 30:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 set -euo pipefail
 
@@ -20,11 +20,12 @@ cd "$WORKDIR"
 mkdir -p logs
 source .venv-alfworld/bin/activate
 
+export TMPDIR=/tmp
 export ALFWORLD_DATA="${ALFWORLD_DATA:-$WORKDIR/alfworld_data}"
 export HF_HOME="${HF_HOME:-$WORKDIR/.hf_cache}"
 export TOKENIZERS_PARALLELISM=false
 
-MODEL=${MODEL:-$WORKDIR/models/Qwen3.5-9B}
+MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 SERVED_NAME=Qwen/Qwen3.5-9B
 EPISODES=${EPISODES:-100}
 SAMPLES_PER_STATE=${SAMPLES_PER_STATE:-4}
@@ -54,6 +55,7 @@ vllm serve "$MODEL" \
   --tensor-parallel-size 1 \
   --gpu-memory-utilization 0.90 \
   --max-model-len 16384 \
+  --gdn-prefill-backend triton \
   >"logs/vllm_${SLURM_JOB_ID}.log" 2>&1 &
 VLLM_PID=$!
 
