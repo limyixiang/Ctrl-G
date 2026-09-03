@@ -18,7 +18,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ctrlg_alfworld.agent_loop import process_ob
+from ctrlg_alfworld.agent_loop import parse_initial_observation, process_ob
 from ctrlg_alfworld.backends import GenConfig, HFBackend, VLLMBackend
 from ctrlg_alfworld.prompts import (
     SYSTEM_INSTRUCTION,
@@ -36,6 +36,40 @@ from ctrlg_alfworld.provenance import (
 from ctrlg_alfworld.skills import SkillSet
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def prepare_output_paths(output: str | Path, *, overwrite: bool) -> tuple[Path, ...]:
+    """Create the output directory and protect existing collection artifacts."""
+
+    output_directory = Path(output)
+    paths = (
+        output_directory / "samples.jsonl",
+        output_directory / "episodes.jsonl",
+        output_directory / "metadata.json",
+    )
+    existing = [path for path in paths if path.exists()]
+    if existing and not overwrite:
+        rendered = ", ".join(str(path) for path in existing)
+        raise FileExistsError(
+            f"refusing to overwrite existing rollout artifacts: {rendered}; "
+            "choose a new --out directory or pass --overwrite"
+        )
+    output_directory.mkdir(parents=True, exist_ok=True)
+    return paths
+
+
+def select_advance_turn(sampled_turns, admissible_actions):
+    """Return the first well-formed admissible sample and its sample index."""
+
+    return next(
+        (
+            (sample_index, turn)
+            for sample_index, turn in sampled_turns
+            if turn.parsed.parse_ok
+            and turn.parsed.action in admissible_actions
+        ),
+        None,
+    )
 
 
 def main():
@@ -75,7 +109,19 @@ def main():
         default="bfloat16",
     )
     parser.add_argument("--out", default="out/alfworld_hmm_samples")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing rollout artifacts in --out instead of refusing.",
+    )
     args = parser.parse_args()
+
+    try:
+        samples_path, episodes_path, metadata_path = prepare_output_paths(
+            args.out, overwrite=args.overwrite
+        )
+    except FileExistsError as exc:
+        parser.error(str(exc))
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -115,12 +161,6 @@ def main():
         )
     skillset = SkillSet.from_file(args.skills)
 
-    output_directory = Path(args.out)
-    output_directory.mkdir(parents=True, exist_ok=True)
-    samples_path = output_directory / "samples.jsonl"
-    episodes_path = output_directory / "episodes.jsonl"
-    metadata_path = output_directory / "metadata.json"
-
     metadata = {
         "model": args.model,
         "backend": args.backend,
@@ -152,6 +192,7 @@ def main():
 
     sample_count = 0
     eligible_count = 0
+    advance_source_counts = Counter()
     per_format = {
         "decision": {"samples": 0, "eligible": 0, "exclusions": Counter()},
     }
@@ -160,15 +201,16 @@ def main():
     ) as episodes_file:
         for episode_index in range(args.num_episodes):
             observations, info = env.reset()
-            observation_parts = observations[0].split("\n\n")
-            initial_observation = "\n".join(observation_parts[1:])
-            task_description = observation_parts[2]
+            initial_observation, task_description = parse_initial_observation(
+                observations[0]
+            )
             gamefile = info["extra.gamefile"][0]
             task_key = task_key_from_gamefile(gamefile)
             observation = initial_observation
             history: list[Step] = []
             success = False
             advance_sources = []
+            advance_trace = []
 
             for step_index in range(args.max_steps):
                 admissible_actions = list(
@@ -201,7 +243,7 @@ def main():
                             use_decision=use_decision,
                             greedy=False,
                         )
-                        sampled_turns.append(turn)
+                        sampled_turns.append((sample_index, turn))
                         hmm_sequence = (
                             list(turn.hmm_prefix_token_ids)
                             + list(turn.tail_token_ids)
@@ -279,15 +321,9 @@ def main():
                         per_format[format_key]["eligible"] += int(distill_eligible)
                         per_format[format_key]["exclusions"].update(exclusion_reasons)
 
-                selected = next(
-                    (
-                        turn
-                        for turn in sampled_turns
-                        if turn.parsed.action in admissible_actions
-                    ),
-                    None,
-                )
+                selected = select_advance_turn(sampled_turns, admissible_actions)
                 if selected is None:
+                    advance_sample = None
                     advance_action = (
                         "look" if "look" in admissible_actions else admissible_actions[0]
                     )
@@ -295,10 +331,11 @@ def main():
                     advance_thought = ""
                     advance_decision = ""
                 else:
-                    advance_action = selected.parsed.action
+                    advance_sample, selected_turn = selected
+                    advance_action = selected_turn.parsed.action
                     advance_source = "admissible_raw_model_sample"
-                    advance_thought = selected.parsed.thought
-                    advance_decision = selected.parsed.decision
+                    advance_thought = selected_turn.parsed.thought
+                    advance_decision = selected_turn.parsed.decision
 
                 next_observation, _, done, info = env.step([advance_action])
                 observation = process_ob(next_observation[0])
@@ -311,6 +348,17 @@ def main():
                     )
                 )
                 advance_sources.append(advance_source)
+                advance_source_counts[advance_source] += 1
+                advance_trace.append(
+                    {
+                        "step": step_index,
+                        "sample": advance_sample,
+                        "source": advance_source,
+                        "action": advance_action,
+                        "decision": advance_decision,
+                        "observation": observation,
+                    }
+                )
                 if done[0]:
                     success = bool(info["won"][0])
                     break
@@ -324,6 +372,7 @@ def main():
                         "success": success,
                         "num_steps": len(history),
                         "advance_sources": advance_sources,
+                        "advance_trace": advance_trace,
                     }
                 )
                 + "\n"
@@ -340,6 +389,7 @@ def main():
         "samples": sample_count,
         "eligible": eligible_count,
         "eligible_rate": eligible_count / max(sample_count, 1),
+        "advance_sources": dict(sorted(advance_source_counts.items())),
         "per_format": {
             name: {
                 "samples": counts["samples"],

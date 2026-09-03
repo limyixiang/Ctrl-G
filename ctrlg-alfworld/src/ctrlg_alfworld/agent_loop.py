@@ -11,6 +11,26 @@ from .experiment import ExperimentCondition, get_condition
 from .skills import SkillSet
 
 
+TASK_DESCRIPTION_PREFIX = "Your task is to:"
+
+
+def parse_initial_observation(raw_observation: str) -> tuple[str, str]:
+    """Split ALFWorld's welcome, room observation, and task description."""
+
+    parts = raw_observation.split("\n\n")
+    if len(parts) < 3:
+        raise ValueError(
+            "ALFWorld reset observation must contain welcome, room, and task sections"
+        )
+    initial_observation = "\n\n".join(parts[1:-1]).strip()
+    task_description = parts[-1].strip()
+    if task_description.startswith(TASK_DESCRIPTION_PREFIX):
+        task_description = task_description[len(TASK_DESCRIPTION_PREFIX) :].strip()
+    if not initial_observation or not task_description:
+        raise ValueError("ALFWorld reset observation has an empty room or task section")
+    return initial_observation, task_description
+
+
 def process_ob(ob: str) -> str:
     if ob.startswith("You arrive at loc "):
         ob = ob[ob.find(". ") + 2:]
@@ -72,8 +92,7 @@ def run_episode(
         else get_condition(condition)
     )
     ob, info = env.reset()
-    initial_obs = "\n".join(ob[0].split("\n\n")[1:])
-    task_description = ob[0].split("\n\n")[2]
+    initial_obs, task_description = parse_initial_observation(ob[0])
 
     gamefile = info["extra.gamefile"][0]
     task_key = task_key_from_gamefile(gamefile)

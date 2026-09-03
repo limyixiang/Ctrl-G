@@ -55,6 +55,11 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
 Add `--show_admissible_actions` to collect a separate prompt-visible dataset.
 The setting is written to every sample and to collection metadata; the dataset
 builder rejects mixtures of prompt-hidden and prompt-visible samples.
+Collection refuses to replace an existing `samples.jsonl`, `episodes.jsonl`, or
+`metadata.json`; choose a new output directory or pass `--overwrite`
+explicitly. The Slurm launcher exposes the latter as `OVERWRITE=1`.
+Each episode also records an `advance_trace` linking every executed action to
+the sampled candidate that produced it, or to the deterministic fallback.
 
 Only decision-format samples are collected. The metadata reports eligible
 counts and exclusion reasons. The vLLM backend requires exact returned token
@@ -146,5 +151,6 @@ supported.
 cd ctrlg-alfworld
 PYTHONPATH=src ../.venv/bin/python -m unittest \
   tests.test_experiment tests.test_eval_routing tests.test_prompts \
-  tests.test_distillation tests.test_summarize_results tests.test_agent_loop
+  tests.test_distillation tests.test_summarize_results tests.test_agent_loop \
+  tests.test_rollout_collection
 ```

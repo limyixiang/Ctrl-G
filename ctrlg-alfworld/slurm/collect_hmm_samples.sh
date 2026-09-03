@@ -10,6 +10,9 @@
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.err
 
+# to run a 1-sample test:
+#   SHOW_ADMISSIBLE_ACTIONS=1 EPISODES=1 SAMPLES_PER_STATE=1 OUTPUT=results/alfworld/pilot_actions_shown sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
+
 set -euo pipefail
 
 WORKDIR=${SLURM_SUBMIT_DIR:-$PWD}
@@ -31,6 +34,10 @@ PORT=$((8000 + SLURM_JOB_ID % 1000))
 PROMPT_ARGS=()
 if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
   PROMPT_ARGS+=(--show_admissible_actions)
+fi
+OUTPUT_ARGS=()
+if [[ "${OVERWRITE:-0}" == "1" ]]; then
+  OUTPUT_ARGS+=(--overwrite)
 fi
 
 cleanup() {
@@ -68,4 +75,5 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --samples_per_state "$SAMPLES_PER_STATE" \
   --temperature "$TEMPERATURE" \
   "${PROMPT_ARGS[@]}" \
+  "${OUTPUT_ARGS[@]}" \
   --out "$OUTPUT"

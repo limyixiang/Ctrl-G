@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from ctrlg_alfworld.agent_loop import run_episode
+from ctrlg_alfworld.agent_loop import parse_initial_observation, run_episode
 from ctrlg_alfworld.experiment import condition_choices, get_condition
 from ctrlg_alfworld.generation import TurnGeneration, parse_turn
 
@@ -58,7 +58,11 @@ class FakeBackend:
 
 class OneStepEnvironment:
     def reset(self):
-        observation = "header\n\nYou see a countertop 1.\n\nlook around"
+        observation = (
+            "-= Welcome to TextWorld, ALFRED! =-\n\n"
+            "You see a countertop 1.\n\n"
+            "Your task is to: look around"
+        )
         info = {
             "extra.gamefile": [
                 "/games/pick_and_place_simple/trial/game.tw-pddl"
@@ -74,6 +78,20 @@ class OneStepEnvironment:
 
 
 class AgentLoopTests(unittest.TestCase):
+    def test_initial_observation_separates_room_and_normalizes_task(self):
+        room, task = parse_initial_observation(
+            "welcome\n\nYou are in a kitchen.\n\nYou see a countertop 1.\n\n"
+            "Your task is to: put a mug on shelf 1."
+        )
+        self.assertEqual(
+            room, "You are in a kitchen.\n\nYou see a countertop 1."
+        )
+        self.assertEqual(task, "put a mug on shelf 1.")
+
+    def test_initial_observation_rejects_unexpected_shape(self):
+        with self.assertRaisesRegex(ValueError, "welcome, room, and task"):
+            parse_initial_observation("missing sections")
+
     def test_every_condition_uses_the_same_dfa_language_and_logs_metrics(self):
         for condition_name in condition_choices():
             with self.subTest(condition=condition_name):
@@ -87,6 +105,13 @@ class AgentLoopTests(unittest.TestCase):
                 condition = get_condition(condition_name)
                 self.assertTrue(record.success)
                 self.assertEqual(record.condition, condition_name)
+                self.assertEqual(
+                    backend.prompt_texts[0].count("Your task is to: look around"),
+                    1,
+                )
+                self.assertNotIn(
+                    "Your task is to: Your task is to:", backend.prompt_texts[0]
+                )
                 self.assertEqual(
                     backend.calls,
                     [
