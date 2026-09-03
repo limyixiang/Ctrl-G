@@ -65,6 +65,13 @@ Only decision-format samples are collected. The metadata reports eligible
 counts and exclusion reasons. The vLLM backend requires exact returned token
 IDs and fails rather than retokenizing generated text.
 
+For each environment state, vLLM collection runs two concurrent generation
+phases: all candidate heads first, followed by all candidate action tails. The
+environment is stepped only after every candidate has been saved, using the
+first well-formed admissible candidate. Candidate seeds are derived from the
+base seed, episode, step, candidate index, and phase, and are stored alongside
+each sample; completion order cannot change candidate identity.
+
 ## 2. Build one HMM dataset
 
 ```bash
