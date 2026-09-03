@@ -10,8 +10,11 @@
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.err
 
-# to run a 1-sample test:
-#   SHOW_ADMISSIBLE_ACTIONS=1 EPISODES=1 SAMPLES_PER_STATE=1 OUTPUT=results/alfworld/pilot_actions_shown sbatch -t 30:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# to run a pilot test:
+#   OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=1 EPISODES=5 SAMPLES_PER_STATE=4 OUTPUT=results/alfworld/pilot_actions_shown_5ep sbatch -t 30:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
+
+# to run with admissible actions
+# SHOW_ADMISSIBLE_ACTIONS=1 OUTPUT=results/alfworld/pilot_actions_shown_5ep sbatch -t 30:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 set -euo pipefail
 
@@ -76,6 +79,8 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --num_episodes "$EPISODES" \
   --samples_per_state "$SAMPLES_PER_STATE" \
   --temperature "$TEMPERATURE" \
+  --max_hmm_sequence_tokens 256 \
+  --max_head_tokens 1024 \
   "${PROMPT_ARGS[@]}" \
   "${OUTPUT_ARGS[@]}" \
   --out "$OUTPUT"
