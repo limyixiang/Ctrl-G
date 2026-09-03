@@ -28,6 +28,7 @@ SEED=${SEED:-42}
 SAVE_PER_STEP=${SAVE_PER_STEP:-8}
 DATASET=alfworld_actions
 mkdir -p "$OUTPUT"
+cp "$DATA_DIR/${DATASET}.metadata.json" "$OUTPUT/training_data_metadata.json"
 
 read -r VOCAB_SIZE EOS_TOKEN_ID < <(
   python -c \

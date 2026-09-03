@@ -26,13 +26,23 @@ def make_summaries():
             **shared,
             "hmm": None,
             "hmm_sha256": None,
-            "factors": {"use_decision": True, "use_dfa": True, "use_hmm": False},
+            "factors": {
+                "use_decision": True,
+                "use_dfa": True,
+                "use_hmm": False,
+                "show_admissible_actions": False,
+            },
         },
         "decision_dfa_hmm": {
             **shared,
             "hmm": "decision-checkpoint",
             "hmm_sha256": "sha-decision-checkpoint",
-            "factors": {"use_decision": True, "use_dfa": True, "use_hmm": True},
+            "factors": {
+                "use_decision": True,
+                "use_dfa": True,
+                "use_hmm": True,
+                "show_admissible_actions": False,
+            },
         },
     }
 
@@ -51,6 +61,12 @@ class SummarizeResultsTests(unittest.TestCase):
         summaries = make_summaries()
         summaries["decision_dfa_hmm"]["beam_size"] = 4
         with self.assertRaisesRegex(ValueError, "beam_size"):
+            summarize_results.validate_comparable(summaries)
+
+    def test_rejects_different_prompt_action_visibility(self):
+        summaries = make_summaries()
+        summaries["decision_dfa_hmm"]["show_admissible_actions"] = True
+        with self.assertRaisesRegex(ValueError, "show_admissible_actions"):
             summarize_results.validate_comparable(summaries)
 
     def test_requires_hmm_artifact_only_in_hmm_cell(self):

@@ -28,6 +28,10 @@ SAMPLES_PER_STATE=${SAMPLES_PER_STATE:-4}
 TEMPERATURE=${TEMPERATURE:-0.7}
 OUTPUT=${OUTPUT:-results/alfworld/hmm_samples_${SLURM_JOB_ID}}
 PORT=$((8000 + SLURM_JOB_ID % 1000))
+PROMPT_ARGS=()
+if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
+  PROMPT_ARGS+=(--show_admissible_actions)
+fi
 
 cleanup() {
   [[ -n "${VLLM_PID:-}" ]] || return 0
@@ -63,4 +67,5 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --num_episodes "$EPISODES" \
   --samples_per_state "$SAMPLES_PER_STATE" \
   --temperature "$TEMPERATURE" \
+  "${PROMPT_ARGS[@]}" \
   --out "$OUTPUT"

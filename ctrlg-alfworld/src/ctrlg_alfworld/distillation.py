@@ -69,6 +69,22 @@ def load_eligible_records(path: str | Path) -> list[dict]:
     return records
 
 
+def validate_prompt_regime(records: list[dict]) -> bool:
+    """Return the shared action-list prompt setting, rejecting mixed data."""
+
+    if not records:
+        raise ValueError("at least one record is required to validate prompt regime")
+    values = [record.get("show_admissible_actions", False) for record in records]
+    if any(not isinstance(value, bool) for value in values):
+        raise ValueError("show_admissible_actions must be a boolean")
+    unique_values = set(values)
+    if len(unique_values) != 1:
+        raise ValueError(
+            "cannot mix samples with shown and hidden admissible-action prompts"
+        )
+    return unique_values.pop()
+
+
 def validate_record(record: dict, *, source: str = "record") -> None:
     required = (
         "use_decision",

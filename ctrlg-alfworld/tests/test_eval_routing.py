@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,6 +30,33 @@ class EvalRoutingTests(unittest.TestCase):
     def test_missing_matched_artifact_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "requires --hmm"):
             run_eval.resolve_hmm_path(get_condition("decision_dfa_hmm"), hmm=None)
+
+    def test_hmm_prompt_regime_metadata_must_match_evaluation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_dir = Path(directory)
+            checkpoint = model_dir / "checkpoint-1"
+            checkpoint.mkdir()
+            metadata = model_dir / run_eval.HMM_TRAINING_METADATA
+            metadata.write_text(json.dumps({"show_admissible_actions": True}))
+
+            path, shown = run_eval.validate_hmm_prompt_regime(
+                str(checkpoint), show_admissible_actions=True
+            )
+            self.assertEqual(path, str(metadata.resolve()))
+            self.assertTrue(shown)
+            with self.assertRaisesRegex(ValueError, "does not match evaluation"):
+                run_eval.validate_hmm_prompt_regime(
+                    str(checkpoint), show_admissible_actions=False
+                )
+
+    def test_legacy_hmm_without_prompt_metadata_remains_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                run_eval.validate_hmm_prompt_regime(
+                    directory, show_admissible_actions=False
+                ),
+                (None, None),
+            )
 
 
 if __name__ == "__main__":

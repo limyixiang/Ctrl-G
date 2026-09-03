@@ -3,6 +3,7 @@ experiment:
     - decision_dfa
     - decision_dfa_hmm
   estimand: "effect of adding the matched decision-format Ctrl-G HMM to the persistent-decision-memory DFA agent"
+  # CLI launchers may enable the matched prompt-visible regime explicitly.
   show_admissible_actions: false
   seed: 42
   max_steps: 50

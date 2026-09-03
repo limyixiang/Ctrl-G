@@ -18,8 +18,9 @@ episode manifest are held fixed; only HMM use changes. This experiment does not
 estimate whether adding decision blocks improves performance.
 
 Every DFA is constructed directly from the current TextWorld
-`info["admissible_commands"]`. The admissible list is hidden from the model in
-the primary comparison. No symbolic `state.py` tracker is used.
+`info["admissible_commands"]`. The admissible list is hidden from the model by
+default. A matched prompt-visible experiment can be enabled explicitly during
+both sample collection and evaluation. No symbolic `state.py` tracker is used.
 
 ## Distillation boundary
 
@@ -50,6 +51,10 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --temperature 0.7 \
   --out out/alfworld_hmm_samples
 ```
+
+Add `--show_admissible_actions` to collect a separate prompt-visible dataset.
+The setting is written to every sample and to collection metadata; the dataset
+builder rejects mixtures of prompt-hidden and prompt-visible samples.
 
 Only decision-format samples are collected. The metadata reports eligible
 counts and exclusion reasons. The vLLM backend requires exact returned token
@@ -111,6 +116,29 @@ python ctrlg-alfworld/scripts/summarize_results.py \
 The summarizer rejects differences in prompt/generation settings, source hash,
 seed, ordered episode manifest, or other paired controls. It reports
 `decision_dfa_hmm - decision_dfa` for every metric.
+
+### Prompt-visible matched experiment
+
+Train a separate HMM from samples collected with
+`--show_admissible_actions`, then pass the same flag to both evaluation cells.
+The Slurm launchers expose this as an environment toggle:
+
+```bash
+SHOW_ADMISSIBLE_ACTIONS=1 \
+OUTPUT=results/alfworld/actions_shown/hmm_samples \
+sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
+
+SHOW_ADMISSIBLE_ACTIONS=1 \
+HMM=results/alfworld/actions_shown/hmm_model/checkpoint-N \
+OUTPUT=results/alfworld/actions_shown/eval \
+sbatch ctrlg-alfworld/slurm/eval_grid.sh
+```
+
+Keep prompt-hidden and prompt-visible samples, HMM checkpoints, and evaluation
+outputs in separate directories. New locally trained checkpoints carry dataset
+metadata, and evaluation rejects a checkpoint whose prompt regime conflicts
+with the requested flag. Legacy checkpoints without this metadata remain
+supported.
 
 ## Focused tests
 

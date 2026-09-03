@@ -21,6 +21,7 @@ class FakeBackend:
     def __init__(self):
         self.tokenizer = CharacterTokenizer()
         self.calls = []
+        self.prompt_texts = []
 
     def generate_turn(
         self,
@@ -32,6 +33,7 @@ class FakeBackend:
         greedy_head,
     ):
         self.calls.append((use_decision, use_hmm, tuple(allowed_actions)))
+        self.prompt_texts.append(prompt_text)
         if use_decision:
             head = (
                 "choose a legal action</think>"
@@ -101,3 +103,27 @@ class AgentLoopTests(unittest.TestCase):
                 self.assertEqual(step.generated_tokens, len(step.tail_token_ids) + len(backend.tokenizer.encode(step.thought + "</think>" + step.hmm_prefix_text)))
                 self.assertAlmostEqual(step.head_latency_seconds, 0.01)
                 self.assertAlmostEqual(step.action_latency_seconds, 0.02)
+
+    def test_admissible_actions_are_shown_only_when_requested(self):
+        hidden_backend = FakeBackend()
+        run_episode(
+            OneStepEnvironment(),
+            hidden_backend,
+            SimpleNamespace(raw_markdown="minimal skills"),
+            "decision_dfa",
+        )
+        self.assertNotIn("Your admissible actions", hidden_backend.prompt_texts[0])
+
+        shown_backend = FakeBackend()
+        run_episode(
+            OneStepEnvironment(),
+            shown_backend,
+            SimpleNamespace(raw_markdown="minimal skills"),
+            "decision_dfa",
+            show_admissible_actions=True,
+        )
+        self.assertIn(
+            "Your admissible actions in the current situation are: "
+            "[go to countertop 1, look].",
+            shown_backend.prompt_texts[0],
+        )

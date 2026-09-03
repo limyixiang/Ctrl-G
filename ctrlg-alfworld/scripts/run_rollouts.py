@@ -47,6 +47,14 @@ def main():
     parser.add_argument("--config", default=str(ROOT / "configs/config_tw.yaml"))
     parser.add_argument("--skills", default=str(ROOT / "templates/SKILLS.md"))
     parser.add_argument(
+        "--show_admissible_actions",
+        action="store_true",
+        help=(
+            "Include the current admissible commands in the model-visible prompt. "
+            "Disabled by default and must match evaluation."
+        ),
+    )
+    parser.add_argument(
         "--split",
         default="train",
         choices=["train", "eval_in_distribution", "eval_out_of_distribution"],
@@ -121,6 +129,7 @@ def main():
         "num_episodes": args.num_episodes,
         "samples_per_state": args.samples_per_state,
         "prompt_format": "decision_with_persistent_history",
+        "show_admissible_actions": args.show_admissible_actions,
         "max_steps": args.max_steps,
         "max_head_tokens": args.max_head_tokens,
         "max_action_tokens": args.max_action_tokens,
@@ -177,7 +186,7 @@ def main():
                         obs_history=history,
                         use_decision=use_decision,
                         admissible_actions=admissible_actions,
-                        show_admissible_actions=False,
+                        show_admissible_actions=args.show_admissible_actions,
                     )
                     prompt_text = render_prompt(
                         backend.tokenizer, SYSTEM_INSTRUCTION, user_prompt
@@ -229,6 +238,7 @@ def main():
                             "gamefile": gamefile,
                             "task_key": task_key,
                             "use_decision": use_decision,
+                            "show_admissible_actions": args.show_admissible_actions,
                             "temperature": args.temperature,
                             "seed": args.seed,
                             "prompt_text": prompt_text,

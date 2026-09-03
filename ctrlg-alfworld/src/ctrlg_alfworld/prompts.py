@@ -41,8 +41,9 @@ def build_user_prompt(
     """Build one prompt for the matched decision-agent experiment.
 
     TextWorld's admissible commands stay out of the model-visible prompt in the
-    core experiment. They are passed separately to the decoder to build the
-    DFA. ``show_admissible_actions`` is reserved for a named ceiling/control.
+    default experiment. They are passed separately to the decoder to build the
+    DFA. ``show_admissible_actions`` enables a matched prompt-visible regime
+    that must be used consistently for sample collection and evaluation.
 
     Native model thinking is enabled by :func:`render_prompt`, so this prompt
     must not request a second, manually generated ``<think>`` block.
@@ -66,7 +67,10 @@ def build_user_prompt(
     action_history = "\n".join(action_history)
 
     if show_admissible_actions:
-        actions = admissible_actions or []
+        # The environment's command order is not semantically meaningful. Keep
+        # it from becoming an accidental prompt variable while leaving the
+        # original list untouched for decoding and rollout fallback behavior.
+        actions = sorted(admissible_actions or [])
         admissible_actions_section = (
             "Your admissible actions in the current situation are: "
             f"[{', '.join(actions)}]."

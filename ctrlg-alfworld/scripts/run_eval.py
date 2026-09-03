@@ -24,6 +24,7 @@ from ctrlg_alfworld.provenance import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+HMM_TRAINING_METADATA = "training_data_metadata.json"
 
 
 def resolve_hmm_path(
@@ -38,6 +39,38 @@ def resolve_hmm_path(
     if hmm is None:
         raise ValueError(f"{condition.name.value} requires --hmm")
     return hmm
+
+
+def validate_hmm_prompt_regime(
+    hmm_path: str | None, *, show_admissible_actions: bool
+) -> tuple[str | None, bool | None]:
+    """Validate new checkpoints while allowing legacy checkpoints without metadata."""
+
+    if hmm_path is None:
+        return None, None
+    checkpoint = Path(hmm_path)
+    candidates = (
+        checkpoint / HMM_TRAINING_METADATA,
+        checkpoint.parent / HMM_TRAINING_METADATA,
+    )
+    metadata_path = next((path for path in candidates if path.is_file()), None)
+    if metadata_path is None:
+        return None, None
+
+    with open(metadata_path) as metadata_file:
+        metadata = json.load(metadata_file)
+    trained_with_actions = metadata.get("show_admissible_actions")
+    if not isinstance(trained_with_actions, bool):
+        raise ValueError(
+            f"{metadata_path} does not define boolean show_admissible_actions"
+        )
+    if trained_with_actions != show_admissible_actions:
+        raise ValueError(
+            "HMM prompt regime does not match evaluation: "
+            f"checkpoint metadata has show_admissible_actions={trained_with_actions}, "
+            f"evaluation has show_admissible_actions={show_admissible_actions}"
+        )
+    return str(metadata_path.resolve()), trained_with_actions
 
 
 def main():
@@ -73,7 +106,10 @@ def main():
     parser.add_argument(
         "--show_admissible_actions",
         action="store_true",
-        help="Prompt-list ceiling/control only; disabled in the matched pair.",
+        help=(
+            "Include current admissible commands in the model-visible prompt. "
+            "Disabled by default and must match HMM sample collection."
+        ),
     )
     parser.add_argument("--out", default="out/eval")
     parser.add_argument("--verbose", action="store_true")
@@ -84,6 +120,12 @@ def main():
         hmm_path = resolve_hmm_path(
             condition,
             hmm=args.hmm,
+        )
+        hmm_training_metadata, hmm_training_show_admissible_actions = (
+            validate_hmm_prompt_regime(
+                hmm_path,
+                show_admissible_actions=args.show_admissible_actions,
+            )
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -202,6 +244,13 @@ def main():
         "model": args.model,
         "hmm": hmm_path,
         "hmm_sha256": artifact_sha256(hmm_path) if hmm_path else None,
+        "hmm_training_metadata": hmm_training_metadata,
+        "hmm_training_metadata_sha256": (
+            file_sha256(hmm_training_metadata) if hmm_training_metadata else None
+        ),
+        "hmm_training_show_admissible_actions": (
+            hmm_training_show_admissible_actions
+        ),
         "split": args.split,
         "seed": args.seed,
         "max_steps": args.max_steps,

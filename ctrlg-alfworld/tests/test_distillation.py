@@ -7,6 +7,7 @@ from ctrlg_alfworld.distillation import (
     extract_lvd_embeddings,
     pad_sequences,
     split_records,
+    validate_prompt_regime,
     validate_tokenizer_contract,
     validate_record,
 )
@@ -18,6 +19,7 @@ def make_record(use_decision, marker):
     eos = 0
     return {
         "use_decision": use_decision,
+        "show_admissible_actions": False,
         "prompt_token_ids": [1, 2],
         "head_token_ids": [3, 4] + prefix,
         "hmm_prefix_token_ids": prefix,
@@ -71,6 +73,19 @@ class DistillationDataTests(unittest.TestCase):
         dev_states = {(item["episode"], item["step"]) for item in dev}
         self.assertFalse(train_states & dev_states)
         self.assertEqual(len(dev), 2)
+
+    def test_prompt_regime_must_be_uniform(self):
+        records = [make_record(True, 11), make_record(True, 12)]
+        self.assertFalse(validate_prompt_regime(records))
+        records[1]["show_admissible_actions"] = True
+        with self.assertRaisesRegex(ValueError, "cannot mix samples"):
+            validate_prompt_regime(records)
+
+    def test_legacy_records_default_to_hidden_prompt_regime(self):
+        record = make_record(True, 11)
+        del record["show_admissible_actions"]
+        validate_record(record)
+        self.assertFalse(validate_prompt_regime([record]))
 
     def test_padding_uses_hmm_eos(self):
         records = [make_record(False, 11), make_record(True, 12)]

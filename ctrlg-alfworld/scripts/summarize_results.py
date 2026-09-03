@@ -38,6 +38,7 @@ def validate_comparable(summaries: dict[str, dict]) -> None:
             "use_decision": True,
             "use_dfa": True,
             "use_hmm": expected.use_hmm,
+            "show_admissible_actions": candidate["show_admissible_actions"],
         }
         for factor, value in expected_factors.items():
             if candidate["factors"].get(factor) != value:

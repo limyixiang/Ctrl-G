@@ -28,6 +28,10 @@ EPISODES=${EPISODES:-134}
 SEED=${SEED:-42}
 CONDITIONS=(decision_dfa decision_dfa_hmm)
 CONDITION=${CONDITIONS[$SLURM_ARRAY_TASK_ID]}
+PROMPT_ARGS=()
+if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
+  PROMPT_ARGS+=(--show_admissible_actions)
+fi
 
 HMM_ARGS=()
 if [[ "$CONDITION" == "decision_dfa_hmm" ]]; then
@@ -39,6 +43,7 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --model "$MODEL" \
   --condition "$CONDITION" \
   "${HMM_ARGS[@]}" \
+  "${PROMPT_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --seed "$SEED" \
   --out "$OUTPUT"

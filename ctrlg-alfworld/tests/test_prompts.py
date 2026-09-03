@@ -27,6 +27,7 @@ class PromptTests(unittest.TestCase):
     def test_prompt_list_requires_explicit_control_flag(self):
         prompt = self.make_prompt(use_decision=False, show_actions=True)
         self.assertIn("go to countertop 1", prompt)
+        self.assertIn("[go to countertop 1, look]", prompt)
 
     def test_native_thinking_is_not_requested_as_manual_tag(self):
         prompt = self.make_prompt(use_decision=False)

@@ -14,6 +14,7 @@ from ctrlg_alfworld.distillation import (
     load_eligible_records,
     pad_sequences,
     split_records,
+    validate_prompt_regime,
     validate_tokenizer_contract,
 )
 from ctrlg_alfworld.provenance import (
@@ -81,6 +82,7 @@ def main():
     records = [item for item in all_eligible if bool(item["use_decision"])]
     if not records:
         raise ValueError("no eligible decision-format records")
+    show_admissible_actions = validate_prompt_regime(records)
     validate_tokenizer_contract(tokenizer, records)
     train_records, dev_records = split_records(
         records, dev_fraction=args.dev_fraction, seed=args.seed
@@ -146,6 +148,7 @@ def main():
         "source_sha256": file_sha256(args.samples),
         "dataset": args.dataset,
         "prompt_format": "decision_with_persistent_history",
+        "show_admissible_actions": show_admissible_actions,
         "eligible_records_in_source": len(all_eligible),
         "eligible_decision_records": len(records),
         "ignored_non_decision_records": len(all_eligible) - len(records),

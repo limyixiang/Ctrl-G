@@ -33,6 +33,10 @@ EPISODES=${2:-134}
 MAX_STEPS=${3:-50}
 MODEL=${MODEL:-$WORKDIR/models/Qwen3.5-9B}
 OUTPUT=${OUTPUT:-results/alfworld/single_${CONDITION}_${SLURM_JOB_ID}}
+PROMPT_ARGS=()
+if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
+  PROMPT_ARGS+=(--show_admissible_actions)
+fi
 
 HMM_ARGS=()
 if [[ "$CONDITION" == "decision_dfa_hmm" ]]; then
@@ -44,6 +48,7 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --model "$MODEL" \
   --condition "$CONDITION" \
   "${HMM_ARGS[@]}" \
+  "${PROMPT_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --max_steps "$MAX_STEPS" \
   --out "$OUTPUT"
