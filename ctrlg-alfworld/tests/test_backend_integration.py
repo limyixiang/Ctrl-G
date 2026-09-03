@@ -1,5 +1,6 @@
 import unittest
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -245,18 +246,146 @@ class BackendIntegrationTests(unittest.TestCase):
         backend.client = SimpleNamespace(completions=Completions())
         backend.model = "tiny"
         backend.cfg = GenConfig()
-        backend._request_index = 0
         chunk = backend._generate_until(
-            "P<action>", ["</action>"], max_new_tokens=16, temperature=0.7
+            "P<action>",
+            ["</action>"],
+            max_new_tokens=16,
+            temperature=0.7,
+            seed=123,
         )
         self.assertEqual(chunk.text, text)
         self.assertEqual(chunk.token_ids, tuple(tokenizer.encode(text)))
         self.assertTrue(
             backend.client.completions.kwargs["extra_body"]["return_token_ids"]
         )
-        self.assertEqual(
-            backend.client.completions.kwargs["extra_body"]["seed"], 42
+        self.assertEqual(backend.client.completions.kwargs["extra_body"]["seed"], 123)
+
+    def test_vllm_batches_heads_then_tails_with_stable_candidate_seeds(self):
+        tokenizer = AsciiTokenizer()
+        backend = object.__new__(VLLMBackend)
+        backend.tokenizer = tokenizer
+        backend.cfg = GenConfig(
+            max_head_tokens=64,
+            max_action_tokens=16,
+            rollout_temperature=0.7,
+            seed=42,
         )
+        calls = []
+        head_texts = [
+            "reason 0</think><decision>d0</decision><action>",
+            "reason 1</think><decision>d1</decision>",
+        ]
+        tail_texts = ["look</action>", "inventory</action>"]
+
+        def chunks(texts):
+            return [
+                GeneratedChunk(
+                    text=text,
+                    token_ids=tuple(tokenizer.encode(text)),
+                    stop_found=True,
+                    truncated=False,
+                    latency_seconds=0.01,
+                )
+                for text in texts
+            ]
+
+        def generate_batch(prompts, stop_strings, max_new_tokens, temperature, seeds):
+            calls.append(
+                (
+                    list(prompts),
+                    list(stop_strings),
+                    max_new_tokens,
+                    temperature,
+                    list(seeds),
+                )
+            )
+            return chunks(head_texts if len(calls) == 1 else tail_texts)
+
+        backend._generate_batch_until = generate_batch
+        turns = backend.generate_turns_unconstrained(
+            "P<think>",
+            count=2,
+            use_decision=True,
+            seed_context=(3, 4),
+        )
+
+        expected_head_seeds = [
+            VLLMBackend._stable_seed(42, (3, 4), index, "head") for index in range(2)
+        ]
+        expected_tail_seeds = [
+            VLLMBackend._stable_seed(42, (3, 4), index, "tail") for index in range(2)
+        ]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], ["P<think>", "P<think>"])
+        self.assertEqual(calls[0][1], ["<action>"])
+        self.assertEqual(calls[0][4], expected_head_seeds)
+        self.assertEqual(
+            calls[1][0],
+            [
+                "P<think>" + head_texts[0],
+                "P<think>" + head_texts[1] + "<action>",
+            ],
+        )
+        self.assertEqual(calls[1][1], ["</action>"])
+        self.assertEqual(calls[1][4], expected_tail_seeds)
+        self.assertEqual([turn.parsed.action for turn in turns], ["look", "inventory"])
+        self.assertEqual([turn.used_head_repair for turn in turns], [False, True])
+        self.assertEqual([turn.head_seed for turn in turns], expected_head_seeds)
+        self.assertEqual([turn.tail_seed for turn in turns], expected_tail_seeds)
+        self.assertEqual(len(set(expected_head_seeds + expected_tail_seeds)), 4)
+
+    def test_vllm_batch_requests_are_concurrent_and_results_stay_ordered(self):
+        tokenizer = AsciiTokenizer()
+        barrier = threading.Barrier(2)
+        seeds_by_prompt = {}
+
+        class Completions:
+            def create(self, **kwargs):
+                seeds_by_prompt[kwargs["prompt"]] = kwargs["extra_body"]["seed"]
+                barrier.wait(timeout=1.0)
+                text = kwargs["prompt"][-1] + "</action>"
+                choice = SimpleNamespace(
+                    text=text, token_ids=tokenizer.encode(text)
+                )
+                return SimpleNamespace(choices=[choice])
+
+        backend = object.__new__(VLLMBackend)
+        backend.tokenizer = tokenizer
+        backend.client = SimpleNamespace(completions=Completions())
+        backend.model = "tiny"
+        backend.cfg = GenConfig()
+        chunks = backend._generate_batch_until(
+            ["prompt-a", "prompt-b"],
+            ["</action>"],
+            16,
+            0.7,
+            [101, 202],
+        )
+
+        self.assertEqual(
+            [chunk.text for chunk in chunks], ["a</action>", "b</action>"]
+        )
+        self.assertEqual(seeds_by_prompt, {"prompt-a": 101, "prompt-b": 202})
+
+    def test_vllm_candidate_seeds_are_reproducible_and_context_specific(self):
+        first = [
+            VLLMBackend._stable_seed(42, (1, 2), index, phase)
+            for phase in ("head", "tail")
+            for index in range(4)
+        ]
+        second = [
+            VLLMBackend._stable_seed(42, (1, 2), index, phase)
+            for phase in ("head", "tail")
+            for index in range(4)
+        ]
+        other_step = [
+            VLLMBackend._stable_seed(42, (1, 3), index, phase)
+            for phase in ("head", "tail")
+            for index in range(4)
+        ]
+        self.assertEqual(first, second)
+        self.assertEqual(len(set(first)), len(first))
+        self.assertTrue(set(first).isdisjoint(other_step))
 
 
 if __name__ == "__main__":

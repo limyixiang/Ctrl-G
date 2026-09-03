@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import torch
@@ -136,6 +138,45 @@ class BaseBackend:
             self.cfg.max_action_tokens,
             temperature,
         )
+        return self._assemble_unconstrained_turn(
+            head,
+            tail,
+            use_decision=use_decision,
+            used_head_repair=used_head_repair,
+        )
+
+    def generate_turns_unconstrained(
+        self,
+        prompt_text: str,
+        *,
+        count: int,
+        use_decision: bool,
+        greedy: bool = False,
+        seed_context: tuple[int, ...] = (),
+    ) -> list[TurnGeneration]:
+        """Generate multiple candidates, sequentially unless overridden."""
+
+        if count < 1:
+            raise ValueError("count must be at least one")
+        return [
+            self.generate_turn_unconstrained(
+                prompt_text, use_decision=use_decision, greedy=greedy
+            )
+            for _ in range(count)
+        ]
+
+    def _assemble_unconstrained_turn(
+        self,
+        head: GeneratedChunk,
+        tail: GeneratedChunk,
+        *,
+        use_decision: bool,
+        used_head_repair: bool,
+        head_seed: int | None = None,
+        tail_seed: int | None = None,
+    ) -> TurnGeneration:
+        """Parse and retain the exact token spans from a head/tail pair."""
+
         parsed = parse_turn(head.text, tail.text, use_decision=use_decision)
 
         try:
@@ -170,6 +211,8 @@ class BaseBackend:
             tail_stop_found=tail.stop_found,
             tail_truncated=tail.truncated,
             tail_span_exact=tail_span_exact,
+            head_seed=head_seed,
+            tail_seed=tail_seed,
         )
 
 
@@ -490,7 +533,24 @@ class VLLMBackend(BaseBackend):
         )
         self.model = model
         self.cfg = gen_config or GenConfig()
-        self._request_index = 0
+
+    @staticmethod
+    def _stable_seed(
+        base_seed: int,
+        seed_context: tuple[int, ...],
+        candidate_index: int,
+        phase: str,
+    ) -> int:
+        """Derive a request seed without depending on request scheduling."""
+
+        coordinates = ":".join(str(value) for value in seed_context)
+        payload = (
+            f"ctrlg-alfworld-v1:{base_seed}:{coordinates}:"
+            f"{candidate_index}:{phase}"
+        ).encode("utf-8")
+        return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") & (
+            (1 << 63) - 1
+        )
 
     def _generate_until(
         self,
@@ -498,10 +558,11 @@ class VLLMBackend(BaseBackend):
         stop_strings,
         max_new_tokens: int,
         temperature: float | None = None,
+        *,
+        seed: int | None = None,
     ) -> GeneratedChunk:
         started = time.perf_counter()
-        request_seed = self.cfg.seed + self._request_index
-        self._request_index += 1
+        request_seed = self.cfg.seed if seed is None else seed
         response = self.client.completions.create(
             model=self.model,
             prompt=prompt_text,
@@ -514,11 +575,12 @@ class VLLMBackend(BaseBackend):
                 "include_stop_str_in_output": True,
                 "return_token_ids": True,
                 "seed": request_seed,
+                "skip_special_tokens": False,
             },
         )
         latency = time.perf_counter() - started
         choice = response.choices[0]
-        text = choice.text
+        server_text = choice.text
         token_ids = getattr(choice, "token_ids", None)
         if token_ids is None and getattr(choice, "model_extra", None):
             token_ids = choice.model_extra.get("token_ids")
@@ -527,12 +589,20 @@ class VLLMBackend(BaseBackend):
                 "vLLM did not return generated token IDs; use a vLLM version "
                 "supporting return_token_ids or collect with --backend hf"
             )
-        decoded = self.tokenizer.decode(
+        decoded_text = self.tokenizer.decode(
             token_ids, skip_special_tokens=False
         )
-        if decoded != text:
+        # vLLM may truncate its displayed text at the stop string while retaining
+        # the complete generated token that contained that string.
+        if (
+            decoded_text != server_text
+            and not decoded_text.startswith(server_text)
+        ):
             raise ValueError(
-                "vLLM text does not exactly match its returned generated token IDs"
+                "Unexpected vLLM tokenizer mismatch: "
+                f"server_text={server_text!r}, "
+                f"decoded_text={decoded_text!r}, "
+                f"token_ids={token_ids!r}"
             )
         text, token_ids, stop_found = _crop_chunk_at_stop(
             self.tokenizer, list(token_ids), stop_strings
@@ -544,3 +614,96 @@ class VLLMBackend(BaseBackend):
             truncated=not stop_found,
             latency_seconds=latency,
         )
+
+    def _generate_batch_until(
+        self,
+        prompt_texts: list[str],
+        stop_strings,
+        max_new_tokens: int,
+        temperature: float | None,
+        seeds: list[int],
+    ) -> list[GeneratedChunk]:
+        """Submit one concurrent phase and return results in input order.
+
+        The OpenAI completions protocol has one seed per request, not one seed
+        per prompt. Separate concurrent requests therefore preserve independent
+        candidate seeds while vLLM continuously batches them on one server.
+        """
+
+        if not prompt_texts:
+            return []
+        if len(prompt_texts) != len(seeds):
+            raise ValueError("prompt_texts and seeds must have the same length")
+
+        def generate_one(item) -> GeneratedChunk:
+            prompt_text, request_seed = item
+            return self._generate_until(
+                prompt_text,
+                stop_strings,
+                max_new_tokens,
+                temperature,
+                seed=request_seed,
+            )
+
+        with ThreadPoolExecutor(max_workers=len(prompt_texts)) as executor:
+            return list(executor.map(generate_one, zip(prompt_texts, seeds)))
+
+    def generate_turns_unconstrained(
+        self,
+        prompt_text: str,
+        *,
+        count: int,
+        use_decision: bool,
+        greedy: bool = False,
+        seed_context: tuple[int, ...] = (),
+    ) -> list[TurnGeneration]:
+        """Generate candidates in one head batch followed by one tail batch."""
+
+        if count < 1:
+            raise ValueError("count must be at least one")
+        temperature = None if greedy else self.cfg.rollout_temperature
+        head_seeds = [
+            self._stable_seed(self.cfg.seed, seed_context, candidate_index, "head")
+            for candidate_index in range(count)
+        ]
+        tail_seeds = [
+            self._stable_seed(self.cfg.seed, seed_context, candidate_index, "tail")
+            for candidate_index in range(count)
+        ]
+
+        heads = self._generate_batch_until(
+            [prompt_text] * count,
+            [ACTION_OPEN],
+            self.cfg.max_head_tokens,
+            temperature,
+            head_seeds,
+        )
+        used_head_repairs = [ACTION_OPEN not in head.text for head in heads]
+        action_prompts = [
+            prompt_text + head.text + (ACTION_OPEN if used_head_repair else "")
+            for head, used_head_repair in zip(heads, used_head_repairs)
+        ]
+        tails = self._generate_batch_until(
+            action_prompts,
+            [ACTION_CLOSE],
+            self.cfg.max_action_tokens,
+            temperature,
+            tail_seeds,
+        )
+        return [
+            self._assemble_unconstrained_turn(
+                head,
+                tail,
+                use_decision=use_decision,
+                used_head_repair=used_head_repair,
+                head_seed=head_seed,
+                tail_seed=tail_seed,
+            )
+            for head, tail, used_head_repair, head_seed, tail_seed in zip(
+                heads,
+                tails,
+                used_head_repairs,
+                head_seeds,
+                tail_seeds,
+            )
+        ]

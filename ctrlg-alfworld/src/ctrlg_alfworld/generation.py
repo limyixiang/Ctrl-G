@@ -81,6 +81,8 @@ class TurnGeneration:
     tail_stop_found: bool = False
     tail_truncated: bool = False
     tail_span_exact: bool = False
+    head_seed: int | None = None
+    tail_seed: int | None = None
 
     @property
     def total_generated_tokens(self) -> int:

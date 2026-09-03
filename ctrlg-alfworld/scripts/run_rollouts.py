@@ -177,6 +177,16 @@ def main():
         "max_hmm_prefix_tokens": args.max_hmm_prefix_tokens,
         "max_hmm_sequence_tokens": args.max_hmm_sequence_tokens,
         "seed": args.seed,
+        "generation_schedule": (
+            "two_phase_vllm_continuous_batch"
+            if args.backend == "vllm"
+            else "sequential_head_tail_pairs"
+        ),
+        "candidate_seed_scheme": (
+            "sha256(base_seed,episode,step,candidate,phase)"
+            if args.backend == "vllm"
+            else "torch_rng_stream"
+        ),
         "device": args.device if args.backend == "hf" else "vllm_server",
         "dtype": args.dtype if args.backend == "hf" else "vllm_server",
         "config": str(Path(args.config).resolve()),
@@ -237,12 +247,14 @@ def main():
                         prompt_text, add_special_tokens=False
                     )
 
-                    for sample_index in range(args.samples_per_state):
-                        turn = backend.generate_turn_unconstrained(
-                            prompt_text,
-                            use_decision=use_decision,
-                            greedy=False,
-                        )
+                    turns = backend.generate_turns_unconstrained(
+                        prompt_text,
+                        count=args.samples_per_state,
+                        use_decision=use_decision,
+                        greedy=False,
+                        seed_context=(episode_index, step_index),
+                    )
+                    for sample_index, turn in enumerate(turns):
                         sampled_turns.append((sample_index, turn))
                         hmm_sequence = (
                             list(turn.hmm_prefix_token_ids)
@@ -283,6 +295,8 @@ def main():
                             "show_admissible_actions": args.show_admissible_actions,
                             "temperature": args.temperature,
                             "seed": args.seed,
+                            "head_seed": turn.head_seed,
+                            "tail_seed": turn.tail_seed,
                             "prompt_text": prompt_text,
                             "prompt_token_ids": prompt_token_ids,
                             "raw_head": turn.parsed.raw_head,
