@@ -14,7 +14,7 @@
 #   OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=1 EPISODES=5 SAMPLES_PER_STATE=4 OUTPUT=results/alfworld/pilot_actions_shown_5ep sbatch -t 30:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 # to run with admissible actions
-# SHOW_ADMISSIBLE_ACTIONS=1 OUTPUT=results/alfworld/pilot_actions_shown_5ep sbatch -t 30:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# SHOW_ADMISSIBLE_ACTIONS=1 sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 set -euo pipefail
 
@@ -30,7 +30,7 @@ export TOKENIZERS_PARALLELISM=false
 
 MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 SERVED_NAME=Qwen/Qwen3.5-9B
-EPISODES=${EPISODES:-100}
+EPISODES=${EPISODES:-3553}
 SAMPLES_PER_STATE=${SAMPLES_PER_STATE:-4}
 TEMPERATURE=${TEMPERATURE:-0.7}
 OUTPUT=${OUTPUT:-results/alfworld/hmm_samples_${SLURM_JOB_ID}}
