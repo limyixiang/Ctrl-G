@@ -58,6 +58,20 @@ builder rejects mixtures of prompt-hidden and prompt-visible samples.
 Collection refuses to replace an existing `samples.jsonl`, `episodes.jsonl`, or
 `metadata.json`; choose a new output directory or pass `--overwrite`
 explicitly. The Slurm launcher exposes the latter as `OVERWRITE=1`.
+For a collection that exceeded its wall clock, resubmit the same episode target
+and output directory with `RESUME=1`:
+
+```bash
+RESUME=1 EPISODES=3553 OUTPUT=results/alfworld/actions_hidden/hmm_samples \
+  sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
+```
+
+Resume validates all generation settings plus the config and skills hashes,
+retains only episodes with complete sample groups, truncates an interrupted
+trailing episode, and appends from the next episode. It is supported for the
+vLLM backend with environment domain randomization disabled. Never set
+`RESUME=1` and `OVERWRITE=1` together, and do not run two collectors against
+the same output directory.
 Each episode also records an `advance_trace` linking every executed action to
 the sampled candidate that produced it, or to the deterministic fallback.
 
@@ -86,6 +100,29 @@ python ctrlg-alfworld/scripts/build_hmm_data.py \
 
 This produces `alfworld_actions.lvd`, `.lvd.embeddings`, `.train.*`, `.dev`,
 and `.metadata.json` for the one matched HMM.
+
+By default, every structurally eligible candidate is included. To build an
+on-policy dataset containing only the sampled candidate that actually advanced
+each environment state, add the matching episode trace:
+
+```bash
+python ctrlg-alfworld/scripts/build_hmm_data.py \
+  --samples out/alfworld_hmm_samples/samples.jsonl \
+  --episodes out/alfworld_hmm_samples/episodes.jsonl \
+  --selected_only \
+  --tokenizer Qwen/Qwen3.5-9B \
+  --model Qwen/Qwen3.5-9B \
+  --output_dir out/alfworld_hmm_data_selected \
+  --dataset alfworld_actions_selected \
+  --save_embeddings
+```
+
+Selected-only construction verifies the `(episode, step, sample)` reference,
+the executed action text, parsing, and admissibility. Deterministic fallback
+steps and selected samples that are not distillation-eligible are reported in
+metadata but do not contribute training records. The original four-candidate
+rollout artifacts remain unchanged and can still build the all-eligible
+dataset.
 
 ## 3. Train the matched HMM
 

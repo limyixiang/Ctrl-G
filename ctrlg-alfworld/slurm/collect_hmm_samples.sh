@@ -33,6 +33,10 @@ SERVED_NAME=Qwen/Qwen3.5-9B
 EPISODES=${EPISODES:-3553}
 SAMPLES_PER_STATE=${SAMPLES_PER_STATE:-4}
 TEMPERATURE=${TEMPERATURE:-0.7}
+if [[ "${RESUME:-0}" == "1" && -z "${OUTPUT:-}" ]]; then
+  echo "RESUME=1 requires OUTPUT to name the existing collection directory" >&2
+  exit 2
+fi
 OUTPUT=${OUTPUT:-results/alfworld/hmm_samples_${SLURM_JOB_ID}}
 PORT=$((8000 + SLURM_JOB_ID % 1000))
 PROMPT_ARGS=()
@@ -40,6 +44,13 @@ if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
   PROMPT_ARGS+=(--show_admissible_actions)
 fi
 OUTPUT_ARGS=()
+if [[ "${RESUME:-0}" == "1" && "${OVERWRITE:-0}" == "1" ]]; then
+  echo "RESUME=1 and OVERWRITE=1 are mutually exclusive" >&2
+  exit 2
+fi
+if [[ "${RESUME:-0}" == "1" ]]; then
+  OUTPUT_ARGS+=(--resume)
+fi
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
   OUTPUT_ARGS+=(--overwrite)
 fi
