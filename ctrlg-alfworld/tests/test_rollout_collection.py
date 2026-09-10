@@ -31,19 +31,20 @@ class RolloutCollectionTests(unittest.TestCase):
 
     def test_output_paths_refuse_existing_artifacts_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
-            samples, episodes, metadata = run_rollouts.prepare_output_paths(
+            samples, episodes, metadata, history = run_rollouts.prepare_output_paths(
                 directory, overwrite=False
             )
             self.assertEqual(samples.name, "samples.jsonl")
             self.assertEqual(episodes.name, "episodes.jsonl")
             self.assertEqual(metadata.name, "metadata.json")
+            self.assertEqual(history.name, "history.jsonl")
             samples.write_text("existing sample\n")
 
             with self.assertRaisesRegex(FileExistsError, "refusing to overwrite"):
                 run_rollouts.prepare_output_paths(directory, overwrite=False)
             self.assertEqual(
                 run_rollouts.prepare_output_paths(directory, overwrite=True),
-                (samples, episodes, metadata),
+                (samples, episodes, metadata, history),
             )
 
     def test_resume_requires_all_collection_artifacts(self):
@@ -167,6 +168,141 @@ class RolloutCollectionTests(unittest.TestCase):
                     samples_per_state=1,
                     num_episodes=2,
                 )
+
+    def test_resume_discards_episode_without_matching_history(self):
+        episodes = []
+        histories = []
+        samples = []
+        for episode in range(2):
+            action = f"action {episode}"
+            observation = f"observation {episode}"
+            episodes.append(
+                {
+                    "episode": episode,
+                    "gamefile": f"game-{episode}",
+                    "task_key": "put",
+                    "success": False,
+                    "num_steps": 1,
+                    "advance_sources": ["admissible_raw_model_sample"],
+                    "advance_trace": [
+                        {
+                            "step": 0,
+                            "action": action,
+                            "decision": "continue",
+                            "observation": observation,
+                        }
+                    ],
+                }
+            )
+            histories.append(
+                {
+                    "episode": episode,
+                    "gamefile": f"game-{episode}",
+                    "task_key": "put",
+                    "success": False,
+                    "steps": [
+                        {
+                            "thought": "reason",
+                            "decision": "continue",
+                            "action": action,
+                            "observation": observation,
+                        }
+                    ],
+                }
+            )
+            samples.append(
+                {
+                    "episode": episode,
+                    "step": 0,
+                    "sample": 0,
+                    "distill_eligible": True,
+                    "distill_exclusion_reasons": [],
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            samples_path = directory / "samples.jsonl"
+            episodes_path = directory / "episodes.jsonl"
+            history_path = directory / "history.jsonl"
+            samples_path.write_text(
+                "".join(json.dumps(record) + "\n" for record in samples),
+                encoding="utf-8",
+            )
+            episodes_path.write_text(
+                "".join(json.dumps(record) + "\n" for record in episodes),
+                encoding="utf-8",
+            )
+            history_path.write_text(
+                json.dumps(histories[0]) + "\n" + '{"episode": 1',
+                encoding="utf-8",
+            )
+
+            state = run_rollouts.recover_resume_state(
+                samples_path,
+                episodes_path,
+                history_path,
+                samples_per_state=1,
+                num_episodes=2,
+            )
+
+            self.assertEqual(state[0:3], (1, 1, 1))
+            self.assertEqual(
+                run_rollouts.read_history_records(history_path), histories[:1]
+            )
+            self.assertEqual(
+                episodes_path.read_text(encoding="utf-8"),
+                json.dumps(episodes[0]) + "\n",
+            )
+            self.assertEqual(
+                samples_path.read_text(encoding="utf-8"),
+                json.dumps(samples[0]) + "\n",
+            )
+
+    def test_resume_trims_history_ahead_of_episode_commit(self):
+        episode = {
+            "episode": 0,
+            "gamefile": "game-0",
+            "task_key": "put",
+            "success": False,
+            "num_steps": 0,
+            "advance_sources": [],
+            "advance_trace": [],
+        }
+        histories = [
+            {
+                "episode": index,
+                "gamefile": f"game-{index}",
+                "task_key": "put",
+                "success": False,
+                "steps": [],
+            }
+            for index in range(2)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            samples_path = directory / "samples.jsonl"
+            episodes_path = directory / "episodes.jsonl"
+            history_path = directory / "history.jsonl"
+            samples_path.touch()
+            episodes_path.write_text(json.dumps(episode) + "\n", encoding="utf-8")
+            history_path.write_text(
+                "".join(json.dumps(record) + "\n" for record in histories),
+                encoding="utf-8",
+            )
+
+            state = run_rollouts.recover_resume_state(
+                samples_path,
+                episodes_path,
+                history_path,
+                samples_per_state=1,
+                num_episodes=2,
+            )
+
+            self.assertEqual(state[0], 1)
+            self.assertEqual(
+                run_rollouts.read_history_records(history_path), histories[:1]
+            )
 
     def test_resume_metadata_rejects_changed_collection_setting(self):
         expected = {field: None for field in run_rollouts.RESUME_COMPATIBILITY_FIELDS}

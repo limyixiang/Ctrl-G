@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ctrlg_alfworld.distillation import (
     extract_lvd_embeddings,
+    load_advance_selections,
     load_eligible_records,
     pad_sequences,
     split_records,
@@ -59,6 +60,15 @@ def pad_lvd(sequences, embeddings, *, length, eos_token_id):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", required=True)
+    parser.add_argument(
+        "--episodes",
+        help="Rollout episodes.jsonl containing advance_trace selections",
+    )
+    parser.add_argument(
+        "--selected_only",
+        action="store_true",
+        help="Build from executed sampled turns referenced by --episodes only",
+    )
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--model", default=None)
     parser.add_argument("--output_dir", required=True)
@@ -74,11 +84,21 @@ def main():
     args = parser.parse_args()
     if args.save_embeddings and args.model is None:
         parser.error("--save_embeddings requires --model")
+    if args.selected_only and not args.episodes:
+        parser.error("--selected_only requires --episodes")
+    if args.episodes and not args.selected_only:
+        parser.error("--episodes is only used with --selected_only")
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-    all_eligible = load_eligible_records(args.samples)
+    selected_actions = None
+    selection_stats = None
+    if args.selected_only:
+        selected_actions, selection_stats = load_advance_selections(args.episodes)
+    all_eligible = load_eligible_records(
+        args.samples, selected_actions=selected_actions
+    )
     records = [item for item in all_eligible if bool(item["use_decision"])]
     if not records:
         raise ValueError("no eligible decision-format records")
@@ -146,6 +166,9 @@ def main():
     metadata = {
         "source": args.samples,
         "source_sha256": file_sha256(args.samples),
+        "selection_policy": (
+            "executed_sample_only" if args.selected_only else "all_eligible"
+        ),
         "dataset": args.dataset,
         "prompt_format": "decision_with_persistent_history",
         "show_admissible_actions": show_admissible_actions,
@@ -169,6 +192,18 @@ def main():
         "source_tree_sha256": source_tree_sha256(Path(__file__).resolve().parents[1]),
         "runtime": runtime_versions(),
     }
+    if args.selected_only:
+        metadata.update(
+            {
+                "episodes_source": args.episodes,
+                "episodes_source_sha256": file_sha256(args.episodes),
+                **selection_stats,
+                "selected_eligible_records": len(all_eligible),
+                "selected_ineligible_records": (
+                    selection_stats["sampled_advance_steps"] - len(all_eligible)
+                ),
+            }
+        )
     with open(f"{prefix}.metadata.json", "w") as output_file:
         json.dump(metadata, output_file, indent=2)
     print(json.dumps(metadata, indent=2))

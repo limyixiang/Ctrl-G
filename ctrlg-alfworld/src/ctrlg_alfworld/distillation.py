@@ -11,6 +11,72 @@ import torch
 from .prompts import ACTION_CLOSE, ACTION_OPEN, DECISION_CLOSE, DECISION_OPEN
 
 
+SampleKey = tuple[int, int, int]
+
+
+def load_advance_selections(
+    path: str | Path,
+) -> tuple[dict[SampleKey, str], dict[str, int]]:
+    """Load executed sampled turns from rollout episode traces.
+
+    Deterministic fallback steps have no corresponding generated sample and are
+    counted but omitted from the returned selection map.
+    """
+
+    selected_actions: dict[SampleKey, str] = {}
+    selected_states: set[tuple[int, int]] = set()
+    trace_steps = 0
+    fallback_steps = 0
+    with open(path) as input_file:
+        for line_number, line in enumerate(input_file, start=1):
+            if not line.strip():
+                continue
+            episode_record = json.loads(line)
+            if "episode" not in episode_record:
+                raise ValueError(f"{path}:{line_number} is missing episode")
+            episode = episode_record["episode"]
+            advance_trace = episode_record.get("advance_trace")
+            if not isinstance(advance_trace, list):
+                raise ValueError(
+                    f"{path}:{line_number} is missing an advance_trace list"
+                )
+            for trace_index, trace in enumerate(advance_trace):
+                trace_steps += 1
+                if not isinstance(trace, dict) or "step" not in trace:
+                    raise ValueError(
+                        f"{path}:{line_number} advance_trace[{trace_index}] "
+                        "is missing step"
+                    )
+                step = trace["step"]
+                state_key = (episode, step)
+                if state_key in selected_states:
+                    raise ValueError(
+                        f"{path}:{line_number} selects more than one turn for "
+                        f"episode {episode}, step {step}"
+                    )
+                selected_states.add(state_key)
+
+                sample = trace.get("sample")
+                if sample is None:
+                    fallback_steps += 1
+                    continue
+                action = trace.get("action")
+                if not isinstance(action, str) or not action:
+                    raise ValueError(
+                        f"{path}:{line_number} advance_trace[{trace_index}] "
+                        "is missing a sampled action"
+                    )
+                selected_actions[(episode, step, sample)] = action
+
+    if trace_steps == 0:
+        raise ValueError(f"no advance-trace steps in {path}")
+    return selected_actions, {
+        "advance_trace_steps": trace_steps,
+        "sampled_advance_steps": len(selected_actions),
+        "fallback_advance_steps": fallback_steps,
+    }
+
+
 def validate_tokenizer_contract(tokenizer, records: list[dict]) -> None:
     """Reject tokenizer/tag/vocabulary mismatches before expensive LVD work."""
 
@@ -54,16 +120,63 @@ def validate_tokenizer_contract(tokenizer, records: list[dict]) -> None:
                 )
 
 
-def load_eligible_records(path: str | Path) -> list[dict]:
+def load_eligible_records(
+    path: str | Path,
+    *,
+    selected_actions: dict[SampleKey, str] | None = None,
+) -> list[dict]:
     records = []
+    seen_selected: set[SampleKey] = set()
     with open(path) as input_file:
         for line_number, line in enumerate(input_file, start=1):
             if not line.strip():
                 continue
             record = json.loads(line)
+            if selected_actions is not None:
+                missing_key_fields = [
+                    field
+                    for field in ("episode", "step", "sample")
+                    if field not in record
+                ]
+                if missing_key_fields:
+                    raise ValueError(
+                        f"{path}:{line_number} is missing selection fields: "
+                        + ", ".join(missing_key_fields)
+                    )
+                key = (record["episode"], record["step"], record["sample"])
+                if key not in selected_actions:
+                    continue
+                if key in seen_selected:
+                    raise ValueError(
+                        f"{path}:{line_number} duplicates selected sample {key}"
+                    )
+                seen_selected.add(key)
+                if record.get("action") != selected_actions[key]:
+                    raise ValueError(
+                        f"{path}:{line_number} action does not match the "
+                        f"advance trace for selected sample {key}"
+                    )
+                if record.get("parse_ok") is not True:
+                    raise ValueError(
+                        f"{path}:{line_number} selected sample {key} is not "
+                        "well formed"
+                    )
+                if record.get("action_was_admissible") is not True:
+                    raise ValueError(
+                        f"{path}:{line_number} selected sample {key} is not "
+                        "admissible"
+                    )
             if record.get("distill_eligible"):
                 validate_record(record, source=f"{path}:{line_number}")
                 records.append(record)
+    if selected_actions is not None:
+        missing_selected = set(selected_actions) - seen_selected
+        if missing_selected:
+            preview = ", ".join(str(key) for key in sorted(missing_selected)[:5])
+            raise ValueError(
+                f"{path} is missing selected samples referenced by the advance "
+                f"trace: {preview}"
+            )
     if not records:
         raise ValueError(f"no distillation-eligible records in {path}")
     return records

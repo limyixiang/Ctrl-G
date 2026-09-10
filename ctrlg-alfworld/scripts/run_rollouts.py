@@ -12,6 +12,7 @@ import os
 import random
 import sys
 from collections import Counter
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from ctrlg_alfworld.prompts import (
 from ctrlg_alfworld.provenance import (
     file_sha256,
     git_revision,
+    json_sha256,
     runtime_versions,
     source_tree_sha256,
 )
@@ -58,6 +60,9 @@ RESUME_COMPATIBILITY_FIELDS = (
     "seed",
     "generation_schedule",
     "candidate_seed_scheme",
+    "environment_seed_scheme",
+    "game_files_sha256",
+    "history_format",
     "config_sha256",
     "skills_sha256",
 )
@@ -176,10 +181,16 @@ def _read_episode_prefix(path: Path) -> tuple[list[dict], list[int]]:
                     f"{len(records) - 1}"
                 ) from exc
             expected_episode = len(records)
-            if record.get("episode") != expected_episode:
+            if (
+                not isinstance(record, dict)
+                or record.get("episode") != expected_episode
+            ):
+                actual_episode = (
+                    record.get("episode") if isinstance(record, dict) else None
+                )
                 raise ValueError(
                     f"non-contiguous episode record in {path}: expected "
-                    f"{expected_episode}, found {record.get('episode')!r}"
+                    f"{expected_episode}, found {actual_episode!r}"
                 )
             num_steps = record.get("num_steps")
             if not isinstance(num_steps, int) or num_steps < 0:
@@ -191,9 +202,84 @@ def _read_episode_prefix(path: Path) -> tuple[list[dict], list[int]]:
     return records, end_offsets
 
 
+def _read_history_prefix(path: Path) -> tuple[list[dict], list[int]]:
+    """Read complete episode history records, tolerating one torn final line."""
+
+    records = []
+    end_offsets = [0]
+    with open(path, "rb") as history_file:
+        while True:
+            line = history_file.readline()
+            if not line:
+                break
+            if not line.endswith(b"\n"):
+                break
+            try:
+                record = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"malformed complete history line in {path} after episode "
+                    f"{len(records) - 1}"
+                ) from exc
+            expected_episode = len(records)
+            if (
+                not isinstance(record, dict)
+                or record.get("episode") != expected_episode
+            ):
+                actual_episode = (
+                    record.get("episode") if isinstance(record, dict) else None
+                )
+                raise ValueError(
+                    f"non-contiguous history record in {path}: expected "
+                    f"{expected_episode}, found {actual_episode!r}"
+                )
+            steps = record.get("steps")
+            if not isinstance(steps, list) or not all(
+                isinstance(step, dict) for step in steps
+            ):
+                raise ValueError(
+                    f"history record {expected_episode} in {path} has invalid steps"
+                )
+            records.append(record)
+            end_offsets.append(history_file.tell())
+    return records, end_offsets
+
+
+def read_history_records(path: Path) -> list[dict]:
+    """Read the complete prefix of an episode-indexed history JSONL file."""
+
+    return _read_history_prefix(path)[0]
+
+
+def _history_matches_episode(history_record: dict, episode_record: dict) -> bool:
+    """Return whether a history record describes the same completed episode."""
+
+    steps = history_record["steps"]
+    if len(steps) != episode_record["num_steps"]:
+        return False
+    for field in ("episode", "gamefile", "task_key", "success"):
+        if history_record.get(field) != episode_record.get(field):
+            return False
+
+    advance_trace = episode_record.get("advance_trace")
+    if (
+        not isinstance(advance_trace, list)
+        or len(advance_trace) != len(steps)
+        or not all(isinstance(trace_step, dict) for trace_step in advance_trace)
+    ):
+        return False
+    return all(
+        history_step.get("action") == trace_step.get("action")
+        and history_step.get("decision", "") == trace_step.get("decision", "")
+        and history_step.get("observation") == trace_step.get("observation")
+        for history_step, trace_step in zip(steps, advance_trace)
+    )
+
+
 def recover_resume_state(
     samples_path: Path,
     episodes_path: Path,
+    history_path: Path | None = None,
     *,
     samples_per_state: int,
     num_episodes: int,
@@ -201,9 +287,19 @@ def recover_resume_state(
     """Repair an interrupted suffix and reconstruct counters at an episode boundary."""
 
     episode_records, episode_end_offsets = _read_episode_prefix(episodes_path)
+    if history_path is None:
+        history_records = None
+        history_end_offsets = None
+    else:
+        history_records, history_end_offsets = _read_history_prefix(history_path)
     if len(episode_records) > num_episodes:
         raise ValueError(
             f"existing collection has {len(episode_records)} episodes, more than "
+            f"requested --num_episodes={num_episodes}"
+        )
+    if history_records is not None and len(history_records) > num_episodes:
+        raise ValueError(
+            f"existing history has {len(history_records)} episodes, more than "
             f"requested --num_episodes={num_episodes}"
         )
 
@@ -218,6 +314,7 @@ def recover_resume_state(
             episode_eligible = 0
             episode_exclusions = Counter()
             episode_complete = True
+            incomplete_artifact = "sample"
             for step_index in range(episode_record["num_steps"]):
                 for sample_index in range(samples_per_state):
                     line = samples_file.readline()
@@ -227,6 +324,9 @@ def recover_resume_state(
                     try:
                         record = json.loads(line)
                     except (UnicodeDecodeError, json.JSONDecodeError):
+                        episode_complete = False
+                        break
+                    if not isinstance(record, dict):
                         episode_complete = False
                         break
                     expected_position = (
@@ -249,10 +349,20 @@ def recover_resume_state(
                 if not episode_complete:
                     break
 
+            if episode_complete and history_records is not None and (
+                episode_position >= len(history_records)
+                or not _history_matches_episode(
+                    history_records[episode_position], episode_record
+                )
+            ):
+                episode_complete = False
+                incomplete_artifact = "history"
+
             if not episode_complete:
                 if episode_position != len(episode_records) - 1:
                     raise ValueError(
-                        "sample corruption occurs before the final episode; refusing "
+                        f"{incomplete_artifact} corruption occurs before the final "
+                        "episode; refusing "
                         "to discard an interior portion of the collection"
                     )
                 committed_sample_offset = episode_sample_offset
@@ -267,6 +377,9 @@ def recover_resume_state(
 
     _truncate_file(samples_path, committed_sample_offset)
     _truncate_file(episodes_path, episode_end_offsets[committed_episodes])
+    if history_path is not None:
+        assert history_end_offsets is not None
+        _truncate_file(history_path, history_end_offsets[committed_episodes])
 
     advance_source_counts = Counter()
     for episode_record in episode_records[:committed_episodes]:
@@ -329,6 +442,7 @@ def prepare_output_paths(
         output_directory / "samples.jsonl",
         output_directory / "episodes.jsonl",
         output_directory / "metadata.json",
+        output_directory / "history.jsonl",
     )
     existing = [path for path in paths if path.exists()]
     if overwrite and resume:
@@ -428,7 +542,12 @@ def main():
     except RuntimeError as exc:
         parser.error(str(exc))
     try:
-        samples_path, episodes_path, metadata_path = prepare_output_paths(
+        (
+            samples_path,
+            episodes_path,
+            metadata_path,
+            history_path,
+        ) = prepare_output_paths(
             args.out, overwrite=args.overwrite, resume=args.resume
         )
     except (FileExistsError, FileNotFoundError, ValueError) as exc:
@@ -451,6 +570,7 @@ def main():
     env_factory.game_files = sorted(env_factory.game_files)
     env_factory.num_games = len(env_factory.game_files)
     env = env_factory.init_env(batch_size=1)
+    env.seed(args.seed)
 
     generation_config = GenConfig(
         max_head_tokens=args.max_head_tokens,
@@ -500,6 +620,9 @@ def main():
             if args.backend == "vllm"
             else "torch_rng_stream"
         ),
+        "environment_seed_scheme": "sorted_gamefiles_then_textworld_seed",
+        "game_files_sha256": json_sha256(env_factory.game_files),
+        "history_format": "episode_jsonl_v1",
         "device": args.device if args.backend == "hf" else "vllm_server",
         "dtype": args.dtype if args.backend == "hf" else "vllm_server",
         "config": str(Path(args.config).resolve()),
@@ -524,6 +647,7 @@ def main():
             ) = recover_resume_state(
                 samples_path,
                 episodes_path,
+                history_path,
                 samples_per_state=args.samples_per_state,
                 num_episodes=args.num_episodes,
             )
@@ -590,7 +714,9 @@ def main():
     output_mode = "a" if args.resume else "w"
     with open(samples_path, output_mode, encoding="utf-8") as samples_file, open(
         episodes_path, output_mode, encoding="utf-8"
-    ) as episodes_file:
+    ) as episodes_file, open(
+        history_path, output_mode, encoding="utf-8"
+    ) as history_file:
         for episode_index in range(start_episode, args.num_episodes):
             observations, info = env.reset()
             initial_observation, task_description = parse_initial_observation(
@@ -761,20 +887,28 @@ def main():
 
             samples_file.flush()
             os.fsync(samples_file.fileno())
-            episodes_file.write(
-                json.dumps(
-                    {
-                        "episode": episode_index,
-                        "gamefile": gamefile,
-                        "task_key": task_key,
-                        "success": success,
-                        "num_steps": len(history),
-                        "advance_sources": advance_sources,
-                        "advance_trace": advance_trace,
-                    }
-                )
-                + "\n"
-            )
+            episode_record = {
+                "episode": episode_index,
+                "gamefile": gamefile,
+                "task_key": task_key,
+                "success": success,
+                "num_steps": len(history),
+                "advance_sources": advance_sources,
+                "advance_trace": advance_trace,
+            }
+            history_record = {
+                "episode": episode_index,
+                "gamefile": gamefile,
+                "task_key": task_key,
+                "success": success,
+                "initial_observation": initial_observation,
+                "task_description": task_description,
+                "steps": [asdict(step) for step in history],
+            }
+            history_file.write(json.dumps(history_record) + "\n")
+            history_file.flush()
+            os.fsync(history_file.fileno())
+            episodes_file.write(json.dumps(episode_record) + "\n")
             episodes_file.flush()
             os.fsync(episodes_file.fileno())
             update_metadata_progress(

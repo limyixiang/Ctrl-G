@@ -1,10 +1,15 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 
 from ctrlg_alfworld.distillation import (
     extract_lvd_embeddings,
+    load_advance_selections,
+    load_eligible_records,
     pad_sequences,
     split_records,
     validate_prompt_regime,
@@ -32,7 +37,169 @@ def make_record(use_decision, marker):
     }
 
 
+def make_rollout_record(*, episode, step, sample, action, marker, eligible=True):
+    record = make_record(True, marker)
+    record.update(
+        {
+            "episode": episode,
+            "step": step,
+            "sample": sample,
+            "action": action,
+            "parse_ok": True,
+            "action_was_admissible": True,
+            "distill_eligible": eligible,
+        }
+    )
+    return record
+
+
+def write_jsonl(directory, name, records):
+    path = Path(directory) / name
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    return path
+
+
 class DistillationDataTests(unittest.TestCase):
+    def test_selected_only_records_follow_episode_advance_trace(self):
+        samples = [
+            make_rollout_record(
+                episode=0, step=0, sample=0, action="look", marker=11
+            ),
+            make_rollout_record(
+                episode=0, step=0, sample=1, action="open fridge 1", marker=12
+            ),
+            make_rollout_record(
+                episode=1, step=0, sample=0, action="inventory", marker=13
+            ),
+        ]
+        episodes = [
+            {
+                "episode": 0,
+                "advance_trace": [
+                    {"step": 0, "sample": 1, "action": "open fridge 1"}
+                ],
+            },
+            {
+                "episode": 1,
+                "advance_trace": [
+                    {"step": 0, "sample": 0, "action": "inventory"}
+                ],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            samples_path = write_jsonl(directory, "samples.jsonl", samples)
+            episodes_path = write_jsonl(directory, "episodes.jsonl", episodes)
+            selected_actions, stats = load_advance_selections(episodes_path)
+            records = load_eligible_records(
+                samples_path, selected_actions=selected_actions
+            )
+
+        self.assertEqual(
+            [
+                (record["episode"], record["step"], record["sample"])
+                for record in records
+            ],
+            [(0, 0, 1), (1, 0, 0)],
+        )
+        self.assertEqual(stats["advance_trace_steps"], 2)
+        self.assertEqual(stats["sampled_advance_steps"], 2)
+        self.assertEqual(stats["fallback_advance_steps"], 0)
+
+    def test_selected_only_skips_fallback_and_ineligible_selected_turns(self):
+        samples = [
+            make_rollout_record(
+                episode=0,
+                step=1,
+                sample=0,
+                action="open fridge 1",
+                marker=11,
+                eligible=False,
+            ),
+            make_rollout_record(
+                episode=0, step=2, sample=1, action="look", marker=12
+            ),
+        ]
+        episodes = [
+            {
+                "episode": 0,
+                "advance_trace": [
+                    {"step": 0, "sample": None, "action": "look"},
+                    {"step": 1, "sample": 0, "action": "open fridge 1"},
+                    {"step": 2, "sample": 1, "action": "look"},
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            samples_path = write_jsonl(directory, "samples.jsonl", samples)
+            episodes_path = write_jsonl(directory, "episodes.jsonl", episodes)
+            selected_actions, stats = load_advance_selections(episodes_path)
+            records = load_eligible_records(
+                samples_path, selected_actions=selected_actions
+            )
+
+        self.assertEqual(
+            [(record["step"], record["sample"]) for record in records],
+            [(2, 1)],
+        )
+        self.assertEqual(stats["advance_trace_steps"], 3)
+        self.assertEqual(stats["sampled_advance_steps"], 2)
+        self.assertEqual(stats["fallback_advance_steps"], 1)
+
+    def test_advance_trace_rejects_multiple_selections_for_one_state(self):
+        episodes = [
+            {
+                "episode": 0,
+                "advance_trace": [
+                    {"step": 0, "sample": 0, "action": "look"},
+                    {"step": 0, "sample": 1, "action": "inventory"},
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            episodes_path = write_jsonl(directory, "episodes.jsonl", episodes)
+            with self.assertRaisesRegex(ValueError, "more than one turn"):
+                load_advance_selections(episodes_path)
+
+    def test_selected_only_rejects_action_mismatch(self):
+        sample = make_rollout_record(
+            episode=0, step=0, sample=0, action="look", marker=11
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            samples_path = write_jsonl(directory, "samples.jsonl", [sample])
+            with self.assertRaisesRegex(ValueError, "action does not match"):
+                load_eligible_records(
+                    samples_path,
+                    selected_actions={(0, 0, 0): "inventory"},
+                )
+
+    def test_selected_only_rejects_missing_sample_reference(self):
+        sample = make_rollout_record(
+            episode=0, step=0, sample=0, action="look", marker=11
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            samples_path = write_jsonl(directory, "samples.jsonl", [sample])
+            with self.assertRaisesRegex(ValueError, "missing selected samples"):
+                load_eligible_records(
+                    samples_path,
+                    selected_actions={(0, 0, 1): "look"},
+                )
+
+    def test_selected_only_rejects_inadmissible_selected_sample(self):
+        sample = make_rollout_record(
+            episode=0, step=0, sample=0, action="look", marker=11
+        )
+        sample["action_was_admissible"] = False
+        with tempfile.TemporaryDirectory() as directory:
+            samples_path = write_jsonl(directory, "samples.jsonl", [sample])
+            with self.assertRaisesRegex(ValueError, "is not admissible"):
+                load_eligible_records(
+                    samples_path,
+                    selected_actions={(0, 0, 0): "look"},
+                )
+
     def test_validate_record_enforces_generated_prefix_alignment(self):
         record = make_record(False, 11)
         validate_record(record)

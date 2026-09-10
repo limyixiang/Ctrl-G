@@ -55,9 +55,10 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
 Add `--show_admissible_actions` to collect a separate prompt-visible dataset.
 The setting is written to every sample and to collection metadata; the dataset
 builder rejects mixtures of prompt-hidden and prompt-visible samples.
-Collection refuses to replace an existing `samples.jsonl`, `episodes.jsonl`, or
-`metadata.json`; choose a new output directory or pass `--overwrite`
-explicitly. The Slurm launcher exposes the latter as `OVERWRITE=1`.
+Collection refuses to replace an existing `samples.jsonl`, `episodes.jsonl`,
+`history.jsonl`, or `metadata.json`; choose a new output directory or pass
+`--overwrite` explicitly. The Slurm launcher exposes the latter as
+`OVERWRITE=1`.
 For a collection that exceeded its wall clock, resubmit the same episode target
 and output directory with `RESUME=1`:
 
@@ -66,10 +67,12 @@ RESUME=1 EPISODES=3553 OUTPUT=results/alfworld/actions_hidden/hmm_samples \
   sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
 ```
 
-Resume validates all generation settings plus the config and skills hashes,
-retains only episodes with complete sample groups, truncates an interrupted
-trailing episode, and appends from the next episode. It is supported for the
-vLLM backend with environment domain randomization disabled. Never set
+`history.jsonl` contains one serialized prompt-history record per completed
+episode. Resume validates all generation settings, environment
+game ordering, and the config and skills hashes. It reconciles samples,
+episode summaries, and histories to their common durable episode boundary,
+then appends from the next episode. It is supported for the vLLM backend with
+environment domain randomization disabled. Never set
 `RESUME=1` and `OVERWRITE=1` together, and do not run two collectors against
 the same output directory.
 Each episode also records an `advance_trace` linking every executed action to
