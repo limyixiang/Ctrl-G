@@ -33,9 +33,11 @@ DFA span:             action body
 HMM suffix:           </action> + EOS
 ```
 
-Original token IDs are retained. Malformed, truncated, or non-token-aligned
-samples are logged but excluded. The state-group train/dev split keeps all
-samples from one `(episode, step)` on the same side of the split.
+Original token IDs are retained. Malformed decision/action spans, truncated or
+repaired decisions, truncated actions, and non-token-aligned samples are logged
+but excluded. A truncated native thought is allowed because it lies outside the
+HMM sequence. The state-group train/dev split keeps all samples from one
+`(episode, step)` on the same side of the split.
 
 ## 1. Collect decision-format samples
 
@@ -87,12 +89,14 @@ For each environment state, vLLM collection runs three continuously batched
 generation phases: all candidate thoughts, then all decisions, then all action
 tails. Thought, decision, and action generation have independent limits of
 1024, 64, and 24 tokens. Fixed delimiters guarantee that a long native thought
-cannot consume the decision allowance. Any synthetic closing delimiter is
-recorded and excludes that candidate from distillation and environment advance.
+cannot consume the decision allowance. A synthetic decision close excludes the
+candidate from distillation; a synthetic thought close does not, because native
+thinking is outside the HMM sequence.
 The environment is stepped only after every candidate has been saved, using the
-first well-formed admissible candidate. Candidate seeds are derived from the
-base seed, episode, step, candidate index, and phase, and are stored alongside
-each sample; completion order cannot change candidate identity.
+first candidate whose extracted action is admissible, regardless of whether its
+non-action formatting is distillation-eligible. Candidate seeds are derived
+from the base seed, episode, step, candidate index, and phase, and are stored
+alongside each sample; completion order cannot change candidate identity.
 
 ## 2. Build one HMM dataset
 

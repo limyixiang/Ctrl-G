@@ -560,14 +560,12 @@ class HFBackend(BaseBackend):
         except ValueError:
             prefix_ids = []
 
-        # A malformed/non-aligned head cannot supply the agreed generated HMM
-        # prefix. Keep the episode moving with the same hard DFA and record the
-        # parse failure instead of silently feeding a synthetic HMM prefix.
+        # The HMM prefix begins after native thinking. A repaired thought close
+        # is therefore outside the HMM sequence, but a repaired decision close
+        # makes the decision/action prefix synthetic and cannot be used.
         hmm_skip_reason = None
         if use_hmm:
-            if head.used_thought_repair:
-                hmm_skip_reason = "synthetic_think_close"
-            elif head.used_decision_repair:
+            if head.used_decision_repair:
                 hmm_skip_reason = "synthetic_decision_close"
             elif not prefix_ids:
                 hmm_skip_reason = "missing_exact_hmm_prefix"

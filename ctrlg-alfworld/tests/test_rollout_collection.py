@@ -12,10 +12,34 @@ run_rollouts = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(run_rollouts)
 
 
-def make_turn(*, parse_ok, action, used_head_repair=False):
+def make_turn(
+    *,
+    parse_ok,
+    action,
+    used_head_repair=False,
+    used_thought_repair=False,
+    used_decision_repair=False,
+    thought_truncated=False,
+    decision_truncated=False,
+    tail_truncated=False,
+    action_close_found=True,
+    tail_span_exact=True,
+    hmm_prefix_token_ids=(10, 11),
+):
     return SimpleNamespace(
-        parsed=SimpleNamespace(parse_ok=parse_ok, action=action),
+        parsed=SimpleNamespace(
+            parse_ok=parse_ok,
+            action=action,
+            action_close_found=action_close_found,
+        ),
         used_head_repair=used_head_repair,
+        used_thought_repair=used_thought_repair,
+        used_decision_repair=used_decision_repair,
+        thought_truncated=thought_truncated,
+        decision_truncated=decision_truncated,
+        tail_truncated=tail_truncated,
+        tail_span_exact=tail_span_exact,
+        hmm_prefix_token_ids=hmm_prefix_token_ids,
     )
 
 
@@ -314,17 +338,17 @@ class RolloutCollectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "temperature"):
             run_rollouts.validate_resume_metadata(existing, expected)
 
-    def test_selection_skips_malformed_admissible_turn(self):
+    def test_selection_uses_first_admissible_even_if_parse_is_malformed(self):
         malformed = make_turn(parse_ok=False, action="look")
         well_formed = make_turn(parse_ok=True, action="look")
         self.assertEqual(
             run_rollouts.select_advance_turn(
                 [(0, malformed), (1, well_formed)], ["look"]
             ),
-            (1, well_formed),
+            (0, malformed),
         )
 
-    def test_selection_skips_structurally_repaired_turn(self):
+    def test_selection_uses_first_admissible_even_if_head_was_repaired(self):
         repaired = make_turn(
             parse_ok=True, action="look", used_head_repair=True
         )
@@ -333,18 +357,67 @@ class RolloutCollectionTests(unittest.TestCase):
             run_rollouts.select_advance_turn(
                 [(0, repaired), (1, natural)], ["look"]
             ),
-            (1, natural),
+            (0, repaired),
         )
 
-    def test_selection_returns_none_without_well_formed_admissible_turn(self):
+    def test_selection_skips_inadmissible_samples_and_uses_later_action(self):
+        admissible = make_turn(parse_ok=False, action="look")
+        self.assertEqual(
+            run_rollouts.select_advance_turn(
+                [
+                    (0, make_turn(parse_ok=True, action="open fridge 1")),
+                    (1, admissible),
+                ],
+                ["look"],
+            ),
+            (1, admissible),
+        )
+
+    def test_selection_returns_none_without_an_admissible_action(self):
         self.assertIsNone(
             run_rollouts.select_advance_turn(
                 [
-                    (0, make_turn(parse_ok=False, action="look")),
+                    (0, make_turn(parse_ok=False, action="inventory")),
                     (1, make_turn(parse_ok=True, action="open fridge 1")),
                 ],
                 ["look"],
             )
+        )
+
+    def test_distillation_allows_truncated_thought(self):
+        turn = make_turn(
+            parse_ok=True,
+            action="look",
+            used_head_repair=True,
+            used_thought_repair=True,
+            thought_truncated=True,
+        )
+        self.assertEqual(
+            run_rollouts.distill_exclusion_reasons(
+                turn,
+                [10, 11, 20, 0],
+                max_hmm_prefix_tokens=None,
+                max_hmm_sequence_tokens=128,
+            ),
+            [],
+        )
+
+    def test_distillation_excludes_truncated_decision(self):
+        turn = make_turn(
+            parse_ok=True,
+            action="look",
+            used_head_repair=True,
+            used_decision_repair=True,
+            decision_truncated=True,
+        )
+        self.assertEqual(
+            run_rollouts.distill_exclusion_reasons(
+                turn,
+                [10, 11, 20, 0],
+                max_hmm_prefix_tokens=None,
+                max_hmm_sequence_tokens=128,
+            ),
+            ["synthetic_decision_close", "decision_truncated"],
         )
 
 

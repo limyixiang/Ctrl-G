@@ -465,18 +465,54 @@ def prepare_output_paths(
 
 
 def select_advance_turn(sampled_turns, admissible_actions):
-    """Return the first well-formed admissible sample and its sample index."""
+    """Return the first sample whose extracted action is admissible."""
 
     return next(
         (
             (sample_index, turn)
             for sample_index, turn in sampled_turns
-            if turn.parsed.parse_ok
-            and not turn.used_head_repair
-            and turn.parsed.action in admissible_actions
+            if turn.parsed.action in admissible_actions
         ),
         None,
     )
+
+
+def distill_exclusion_reasons(
+    turn,
+    hmm_sequence,
+    *,
+    max_hmm_prefix_tokens,
+    max_hmm_sequence_tokens,
+):
+    """Explain why a generated decision/action sequence cannot be distilled.
+
+    Native thinking is outside the HMM sequence, so a repaired or truncated
+    thought does not invalidate an otherwise exact decision/action span.
+    """
+
+    reasons = []
+    if not turn.parsed.parse_ok:
+        reasons.append("parse_failure")
+    if not turn.hmm_prefix_token_ids:
+        reasons.append("missing_exact_hmm_prefix")
+    if not turn.parsed.action_close_found:
+        reasons.append("missing_action_close")
+    if turn.used_decision_repair:
+        reasons.append("synthetic_decision_close")
+    if turn.decision_truncated:
+        reasons.append("decision_truncated")
+    if turn.tail_truncated:
+        reasons.append("tail_truncated")
+    if not turn.tail_span_exact:
+        reasons.append("non_exact_action_tail_span")
+    if (
+        max_hmm_prefix_tokens is not None
+        and len(turn.hmm_prefix_token_ids) > max_hmm_prefix_tokens
+    ):
+        reasons.append("hmm_prefix_too_long")
+    if len(hmm_sequence) > max_hmm_sequence_tokens:
+        reasons.append("hmm_sequence_too_long")
+    return reasons
 
 
 def main():
@@ -773,31 +809,12 @@ def main():
                             + list(turn.tail_token_ids)
                             + [backend.tokenizer.eos_token_id]
                         )
-                        exclusion_reasons = []
-                        if not turn.parsed.parse_ok:
-                            exclusion_reasons.append("parse_failure")
-                        if not turn.hmm_prefix_token_ids:
-                            exclusion_reasons.append("missing_exact_hmm_prefix")
-                        if not turn.parsed.action_close_found:
-                            exclusion_reasons.append("missing_action_close")
-                        if turn.used_thought_repair:
-                            exclusion_reasons.append("synthetic_think_close")
-                        if turn.used_decision_repair:
-                            exclusion_reasons.append("synthetic_decision_close")
-                        if turn.head_truncated:
-                            exclusion_reasons.append("head_truncated")
-                        if turn.tail_truncated:
-                            exclusion_reasons.append("tail_truncated")
-                        if not turn.tail_span_exact:
-                            exclusion_reasons.append("non_exact_action_tail_span")
-                        if (
-                            args.max_hmm_prefix_tokens is not None
-                            and len(turn.hmm_prefix_token_ids)
-                            > args.max_hmm_prefix_tokens
-                        ):
-                            exclusion_reasons.append("hmm_prefix_too_long")
-                        if len(hmm_sequence) > args.max_hmm_sequence_tokens:
-                            exclusion_reasons.append("hmm_sequence_too_long")
+                        exclusion_reasons = distill_exclusion_reasons(
+                            turn,
+                            hmm_sequence,
+                            max_hmm_prefix_tokens=args.max_hmm_prefix_tokens,
+                            max_hmm_sequence_tokens=args.max_hmm_sequence_tokens,
+                        )
                         distill_eligible = not exclusion_reasons
                         record = {
                             "episode": episode_index,

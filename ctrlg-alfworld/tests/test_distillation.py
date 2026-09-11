@@ -33,6 +33,8 @@ def make_record(use_decision, marker):
         "raw_tail": "look</action>",
         "tail_span_exact": True,
         "head_truncated": False,
+        "decision_truncated": False,
+        "used_decision_repair": False,
         "tail_truncated": False,
     }
 
@@ -122,6 +124,7 @@ class DistillationDataTests(unittest.TestCase):
                 episode=0, step=2, sample=1, action="look", marker=12
             ),
         ]
+        samples[0]["parse_ok"] = False
         episodes = [
             {
                 "episode": 0,
@@ -212,6 +215,20 @@ class DistillationDataTests(unittest.TestCase):
         record["raw_tail"] = "look</action>,"
         record["tail_span_exact"] = False
         with self.assertRaisesRegex(ValueError, "not exactly token-aligned"):
+            validate_record(record)
+
+    def test_validate_record_allows_truncated_thought(self):
+        record = make_record(True, 11)
+        record["head_truncated"] = True
+        record["thought_truncated"] = True
+        validate_record(record)
+
+    def test_validate_record_rejects_truncated_decision(self):
+        record = make_record(True, 11)
+        record["head_truncated"] = True
+        record["decision_truncated"] = True
+        record["used_decision_repair"] = True
+        with self.assertRaisesRegex(ValueError, "decision span"):
             validate_record(record)
 
     def test_validate_record_rejects_extra_tokens_after_eos(self):

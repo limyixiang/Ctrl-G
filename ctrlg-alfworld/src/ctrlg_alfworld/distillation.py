@@ -156,17 +156,17 @@ def load_eligible_records(
                         f"{path}:{line_number} action does not match the "
                         f"advance trace for selected sample {key}"
                     )
-                if record.get("parse_ok") is not True:
-                    raise ValueError(
-                        f"{path}:{line_number} selected sample {key} is not "
-                        "well formed"
-                    )
                 if record.get("action_was_admissible") is not True:
                     raise ValueError(
                         f"{path}:{line_number} selected sample {key} is not "
                         "admissible"
                     )
             if record.get("distill_eligible"):
+                if record.get("parse_ok") is not True:
+                    raise ValueError(
+                        f"{path}:{line_number} distillation-eligible sample "
+                        "is not well formed"
+                    )
                 validate_record(record, source=f"{path}:{line_number}")
                 records.append(record)
     if selected_actions is not None:
@@ -209,6 +209,8 @@ def validate_record(record: dict, *, source: str = "record") -> None:
         "raw_tail",
         "tail_span_exact",
         "head_truncated",
+        "decision_truncated",
+        "used_decision_repair",
         "tail_truncated",
     )
     missing = [key for key in required if key not in record]
@@ -221,8 +223,12 @@ def validate_record(record: dict, *, source: str = "record") -> None:
     sequence = list(record["hmm_sequence_token_ids"])
     if not prefix:
         raise ValueError(f"{source} has an empty HMM prefix")
-    if record["head_truncated"] or record["tail_truncated"]:
-        raise ValueError(f"{source} contains a truncated generated span")
+    if record["decision_truncated"] or record["used_decision_repair"]:
+        raise ValueError(
+            f"{source} contains a truncated or repaired decision span"
+        )
+    if record["tail_truncated"]:
+        raise ValueError(f"{source} contains a truncated action span")
     if not record["tail_span_exact"]:
         raise ValueError(f"{source} action tail is not exactly token-aligned")
     if not record["raw_tail"].endswith("</action>"):

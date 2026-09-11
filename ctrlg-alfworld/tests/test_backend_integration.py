@@ -243,6 +243,94 @@ class BackendIntegrationTests(unittest.TestCase):
         self.assertIsNone(turn.hmm_skip_reason)
         self.assertGreater(len(turn.hmm_prefix_token_ids), 1)
 
+    def test_truncated_thought_does_not_disable_hmm(self):
+        tokenizer = AsciiTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer = tokenizer
+        backend.cfg = GenConfig()
+        thought = GeneratedChunk(
+            text="unfinished thought",
+            token_ids=tuple(tokenizer.encode("unfinished thought")),
+            stop_found=False,
+            truncated=True,
+            latency_seconds=0.01,
+        )
+        decision = GeneratedChunk(
+            text="go</decision>",
+            token_ids=tuple(tokenizer.encode("go</decision>")),
+            stop_found=True,
+            truncated=False,
+            latency_seconds=0.01,
+        )
+        head = backend._assemble_head(thought, decision, use_decision=True)
+        backend._generate_head = lambda prompt, use_decision, greedy: head
+        backend._generate_dfa_action = lambda *args, **kwargs: self.fail(
+            "DFA fallback should not run for thought-only truncation"
+        )
+        backend._generate_hmm_action = lambda prompt, actions, prefix_ids: (
+            "a",
+            tuple(tokenizer.encode("a")),
+            tuple(tokenizer.encode("a</action>")),
+            0.02,
+        )
+
+        turn = HFBackend.generate_turn(
+            backend,
+            "P<think>",
+            ["a"],
+            use_decision=True,
+            use_hmm=True,
+        )
+
+        self.assertTrue(turn.thought_truncated)
+        self.assertFalse(turn.decision_truncated)
+        self.assertTrue(turn.hmm_applied)
+        self.assertIsNone(turn.hmm_skip_reason)
+
+    def test_truncated_decision_disables_hmm(self):
+        tokenizer = AsciiTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer = tokenizer
+        backend.cfg = GenConfig()
+        thought = GeneratedChunk(
+            text="reason</think>",
+            token_ids=tuple(tokenizer.encode("reason</think>")),
+            stop_found=True,
+            truncated=False,
+            latency_seconds=0.01,
+        )
+        decision = GeneratedChunk(
+            text="unfinished decision",
+            token_ids=tuple(tokenizer.encode("unfinished decision")),
+            stop_found=False,
+            truncated=True,
+            latency_seconds=0.01,
+        )
+        head = backend._assemble_head(thought, decision, use_decision=True)
+        backend._generate_head = lambda prompt, use_decision, greedy: head
+        backend._generate_hmm_action = lambda *args, **kwargs: self.fail(
+            "HMM should not run for a truncated decision"
+        )
+        backend._generate_dfa_action = lambda prompt, actions: GeneratedChunk(
+            text="a</action>",
+            token_ids=tuple(tokenizer.encode("a</action>")),
+            stop_found=True,
+            truncated=False,
+            latency_seconds=0.02,
+        )
+
+        turn = HFBackend.generate_turn(
+            backend,
+            "P<think>",
+            ["a"],
+            use_decision=True,
+            use_hmm=True,
+        )
+
+        self.assertTrue(turn.decision_truncated)
+        self.assertFalse(turn.hmm_applied)
+        self.assertEqual(turn.hmm_skip_reason, "synthetic_decision_close")
+
     def test_overlong_hmm_prefix_is_measured_and_falls_back_to_dfa(self):
         tokenizer = AsciiTokenizer()
         backend = object.__new__(HFBackend)
