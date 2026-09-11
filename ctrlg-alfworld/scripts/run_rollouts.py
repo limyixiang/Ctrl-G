@@ -12,7 +12,6 @@ import os
 import random
 import sys
 from collections import Counter
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -903,7 +902,14 @@ def main():
                 "success": success,
                 "initial_observation": initial_observation,
                 "task_description": task_description,
-                "steps": [asdict(step) for step in history],
+                "steps": [
+                    {
+                        "decision": step.decision,
+                        "action": step.action,
+                        "observation": step.observation,
+                    }
+                    for step in history
+                ],
             }
             history_file.write(json.dumps(history_record) + "\n")
             history_file.flush()

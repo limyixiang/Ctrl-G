@@ -67,8 +67,9 @@ RESUME=1 EPISODES=3553 OUTPUT=results/alfworld/actions_hidden/hmm_samples \
   sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
 ```
 
-`history.jsonl` contains one serialized prompt-history record per completed
-episode. Resume validates all generation settings, environment
+`history.jsonl` contains one prompt-history record per completed episode. Step
+records include decisions, actions, and observations; model thoughts are not
+logged. Resume validates all generation settings, environment
 game ordering, and the config and skills hashes. It reconciles samples,
 episode summaries, and histories to their common durable episode boundary,
 then appends from the next episode. It is supported for the vLLM backend with

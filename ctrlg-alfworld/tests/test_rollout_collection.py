@@ -202,7 +202,6 @@ class RolloutCollectionTests(unittest.TestCase):
                     "success": False,
                     "steps": [
                         {
-                            "thought": "reason",
                             "decision": "continue",
                             "action": action,
                             "observation": observation,
