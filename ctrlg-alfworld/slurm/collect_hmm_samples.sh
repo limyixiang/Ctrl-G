@@ -6,15 +6,18 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:h100-47:1
+#SBATCH --gres=gpu:h100-96:1
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.err
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=e1121685@u.nus.edu
 
 # to run a pilot test:
-#   OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=1 EPISODES=5 SAMPLES_PER_STATE=4 OUTPUT=results/alfworld/pilot_actions_shown_5ep sbatch -t 30:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=2 SAMPLES_PER_STATE=1 OUTPUT=results/alfworld/pilot_actions_hidden sbatch -t 3:00:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
-# to run with admissible actions
-# SHOW_ADMISSIBLE_ACTIONS=1 sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# actual runs
+# RESUME=1 SHOW_ADMISSIBLE_ACTIONS=0 OUTPUT=results/alfworld/actions_hidden/hmm_samples_h100_96 sbatch --job-name=alfworld-hidden ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# RESUME=1 SHOW_ADMISSIBLE_ACTIONS=1 OUTPUT=results/alfworld/actions_shown/hmm_samples_h100_96 sbatch --job-name=alfworld-shown ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 set -euo pipefail
 
@@ -53,6 +56,9 @@ if [[ "${RESUME:-0}" == "1" ]]; then
 fi
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
   OUTPUT_ARGS+=(--overwrite)
+fi
+if [[ "${MAX_STEPS:-50}" -ne 50 ]]; then
+  OUTPUT_ARGS+=(--max_steps $MAX_STEPS)
 fi
 
 cleanup() {

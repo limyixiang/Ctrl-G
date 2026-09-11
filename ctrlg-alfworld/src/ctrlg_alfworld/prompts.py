@@ -52,18 +52,10 @@ def build_user_prompt(
     skill = SKILL_TEMPLATE.format(skill_content=skill_content)
     parts.append(skill)
 
-    recent_obs_history = obs_history[-3:]
     action_history = []
-    for h in recent_obs_history:
-        # Native/hidden reasoning is never replayed. Decision conditions retain
-        # their explicit decisions as persistent memory; no-decision prompts
-        # retain the original action/observation-only history.
-        if use_decision and h.decision.strip():
-            action_history.append(
-                f"{DECISION_OPEN}{h.decision.strip()}{DECISION_CLOSE}"
-            )
-        action_history.append(f"{ACTION_OPEN}{h.action}{ACTION_CLOSE}")
-        action_history.append(f"OBS: {h.observation.strip()}")
+    for h in obs_history:
+        action_history.append(f"ACTION: {h.action.strip()}")
+        action_history.append(f"OBSERVATION: {h.observation.strip()}")
     action_history = "\n".join(action_history)
 
     if show_admissible_actions:
