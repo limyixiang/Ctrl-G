@@ -12,7 +12,8 @@ SPEC.loader.exec_module(summarize_results)
 def make_summaries():
     shared = {
         "model": "model", "split": "eval_out_of_distribution", "seed": 42,
-        "max_steps": 50, "beam_size": 8, "max_head_tokens": 512,
+        "max_steps": 50, "beam_size": 8, "max_thought_tokens": 1024,
+        "max_decision_tokens": 64,
         "max_action_tokens": 24, "min_action_tokens": 1, "temperature": 1.0,
         "rollout_temperature": 0.7, "max_hmm_prefix_tokens": None,
         "num_episodes": 2, "sample_actions": False, "sample_head": False,

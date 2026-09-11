@@ -65,6 +65,21 @@ class GeneratedChunk:
 
 
 @dataclass(frozen=True)
+class HeadGeneration:
+    """Structured pre-action generation with independently budgeted phases."""
+
+    chunk: GeneratedChunk
+    thought_chunk: GeneratedChunk
+    decision_chunk: GeneratedChunk | None
+    used_thought_repair: bool = False
+    used_decision_repair: bool = False
+
+    @property
+    def used_repair(self) -> bool:
+        return self.used_thought_repair or self.used_decision_repair
+
+
+@dataclass(frozen=True)
 class TurnGeneration:
     parsed: ParsedTurn
     head_token_ids: tuple[int, ...]
@@ -83,6 +98,17 @@ class TurnGeneration:
     tail_span_exact: bool = False
     head_seed: int | None = None
     tail_seed: int | None = None
+    decision_seed: int | None = None
+    thought_token_ids: tuple[int, ...] = ()
+    decision_token_ids: tuple[int, ...] = ()
+    thought_latency_seconds: float = 0.0
+    decision_latency_seconds: float = 0.0
+    thought_stop_found: bool = False
+    thought_truncated: bool = False
+    decision_stop_found: bool = False
+    decision_truncated: bool = False
+    used_thought_repair: bool = False
+    used_decision_repair: bool = False
 
     @property
     def total_generated_tokens(self) -> int:
@@ -94,7 +120,7 @@ class TurnGeneration:
 
 
 def parse_turn(raw_head: str, raw_tail: str, *, use_decision: bool) -> ParsedTurn:
-    """Parse the two-phase generation without silently repairing it.
+    """Parse the assembled three-phase generation without silently repairing it.
 
     ``raw_head`` ends at and includes ``<action>`` when generation followed the
     contract. ``raw_tail`` starts with the action body and ends at and includes

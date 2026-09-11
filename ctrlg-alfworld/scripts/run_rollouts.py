@@ -51,7 +51,8 @@ RESUME_COMPATIBILITY_FIELDS = (
     "prompt_format",
     "show_admissible_actions",
     "max_steps",
-    "max_head_tokens",
+    "max_thought_tokens",
+    "max_decision_tokens",
     "max_action_tokens",
     "temperature",
     "max_hmm_prefix_tokens",
@@ -471,6 +472,7 @@ def select_advance_turn(sampled_turns, admissible_actions):
             (sample_index, turn)
             for sample_index, turn in sampled_turns
             if turn.parsed.parse_ok
+            and not turn.used_head_repair
             and turn.parsed.action in admissible_actions
         ),
         None,
@@ -501,7 +503,8 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=100)
     parser.add_argument("--samples_per_state", type=int, default=4)
     parser.add_argument("--max_steps", type=int, default=50)
-    parser.add_argument("--max_head_tokens", type=int, default=512)
+    parser.add_argument("--max_thought_tokens", type=int, default=1024)
+    parser.add_argument("--max_decision_tokens", type=int, default=64)
     parser.add_argument("--max_action_tokens", type=int, default=24)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--max_hmm_prefix_tokens", type=int, default=None)
@@ -572,7 +575,8 @@ def main():
     env.seed(args.seed)
 
     generation_config = GenConfig(
-        max_head_tokens=args.max_head_tokens,
+        max_thought_tokens=args.max_thought_tokens,
+        max_decision_tokens=args.max_decision_tokens,
         max_action_tokens=args.max_action_tokens,
         rollout_temperature=args.temperature,
         seed=args.seed,
@@ -603,16 +607,17 @@ def main():
         "prompt_format": "decision_with_persistent_history",
         "show_admissible_actions": args.show_admissible_actions,
         "max_steps": args.max_steps,
-        "max_head_tokens": args.max_head_tokens,
+        "max_thought_tokens": args.max_thought_tokens,
+        "max_decision_tokens": args.max_decision_tokens,
         "max_action_tokens": args.max_action_tokens,
         "temperature": args.temperature,
         "max_hmm_prefix_tokens": args.max_hmm_prefix_tokens,
         "max_hmm_sequence_tokens": args.max_hmm_sequence_tokens,
         "seed": args.seed,
         "generation_schedule": (
-            "two_phase_vllm_continuous_batch"
+            "three_phase_vllm_continuous_batch"
             if args.backend == "vllm"
-            else "sequential_head_tail_pairs"
+            else "sequential_thought_decision_action"
         ),
         "candidate_seed_scheme": (
             "sha256(base_seed,episode,step,candidate,phase)"
@@ -775,8 +780,10 @@ def main():
                             exclusion_reasons.append("missing_exact_hmm_prefix")
                         if not turn.parsed.action_close_found:
                             exclusion_reasons.append("missing_action_close")
-                        if turn.used_head_repair:
-                            exclusion_reasons.append("synthetic_action_open")
+                        if turn.used_thought_repair:
+                            exclusion_reasons.append("synthetic_think_close")
+                        if turn.used_decision_repair:
+                            exclusion_reasons.append("synthetic_decision_close")
                         if turn.head_truncated:
                             exclusion_reasons.append("head_truncated")
                         if turn.tail_truncated:
@@ -803,12 +810,15 @@ def main():
                             "temperature": args.temperature,
                             "seed": args.seed,
                             "head_seed": turn.head_seed,
+                            "decision_seed": turn.decision_seed,
                             "tail_seed": turn.tail_seed,
                             "prompt_text": prompt_text,
                             "prompt_token_ids": prompt_token_ids,
                             "raw_head": turn.parsed.raw_head,
                             "raw_tail": turn.parsed.raw_tail,
                             "head_token_ids": list(turn.head_token_ids),
+                            "thought_token_ids": list(turn.thought_token_ids),
+                            "decision_token_ids": list(turn.decision_token_ids),
                             "hmm_prefix_text": turn.parsed.hmm_prefix_text,
                             "hmm_prefix_token_ids": list(
                                 turn.hmm_prefix_token_ids
@@ -820,8 +830,14 @@ def main():
                             "parse_ok": turn.parsed.parse_ok,
                             "parse_errors": list(turn.parsed.errors),
                             "used_head_repair": turn.used_head_repair,
+                            "used_thought_repair": turn.used_thought_repair,
+                            "used_decision_repair": turn.used_decision_repair,
                             "head_stop_found": turn.head_stop_found,
                             "head_truncated": turn.head_truncated,
+                            "thought_stop_found": turn.thought_stop_found,
+                            "thought_truncated": turn.thought_truncated,
+                            "decision_stop_found": turn.decision_stop_found,
+                            "decision_truncated": turn.decision_truncated,
                             "tail_stop_found": turn.tail_stop_found,
                             "tail_truncated": turn.tail_truncated,
                             "tail_span_exact": turn.tail_span_exact,
@@ -832,6 +848,8 @@ def main():
                             ),
                             "admissible_gt": admissible_actions,
                             "head_latency_seconds": turn.head_latency_seconds,
+                            "thought_latency_seconds": turn.thought_latency_seconds,
+                            "decision_latency_seconds": turn.decision_latency_seconds,
                             "action_latency_seconds": turn.action_latency_seconds,
                         }
                         samples_file.write(json.dumps(record) + "\n")

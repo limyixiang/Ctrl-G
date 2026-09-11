@@ -22,13 +22,20 @@ from .constraints import (
 )
 from .generation import (
     GeneratedChunk,
+    HeadGeneration,
     TurnGeneration,
     exact_action_tail_token_ids,
     hmm_prefix_token_ids,
     parse_turn,
     token_boundary_for_char_offset,
 )
-from .prompts import ACTION_CLOSE, ACTION_OPEN
+from .prompts import (
+    ACTION_CLOSE,
+    ACTION_OPEN,
+    DECISION_CLOSE,
+    DECISION_OPEN,
+    THINK_CLOSE,
+)
 
 torch.backends.cuda.enable_cudnn_sdp(False)
 
@@ -58,7 +65,8 @@ class StopOnStrings(StoppingCriteria):
 
 @dataclass
 class GenConfig:
-    max_head_tokens: int = 512
+    max_thought_tokens: int = 1024
+    max_decision_tokens: int = 64
     max_action_tokens: int = 24
     min_action_tokens: int = 1
     beam_size: int = 8
@@ -111,25 +119,103 @@ class BaseBackend:
     ) -> GeneratedChunk:
         raise NotImplementedError
 
-    def _generate_head(self, prompt_text: str, *, greedy: bool) -> GeneratedChunk:
+    def _assemble_head(
+        self,
+        thought: GeneratedChunk,
+        decision: GeneratedChunk | None,
+        *,
+        use_decision: bool,
+    ) -> HeadGeneration:
+        """Add fixed phase delimiters while preserving exact continuation IDs."""
+
+        text = thought.text
+        token_ids = list(thought.token_ids)
+
+        def append_fixed(value: str) -> None:
+            nonlocal text
+            token_ids.extend(tokenize_fixed_suffix(self.tokenizer, token_ids, value))
+            text += value
+
+        used_thought_repair = not thought.stop_found
+        if used_thought_repair:
+            append_fixed(THINK_CLOSE)
+
+        used_decision_repair = False
+        if use_decision:
+            if decision is None:
+                raise ValueError("decision generation is required in decision mode")
+            append_fixed(DECISION_OPEN)
+            before_decision = self.tokenizer.decode(
+                token_ids, skip_special_tokens=False
+            )
+            combined_ids = token_ids + list(decision.token_ids)
+            combined_text = self.tokenizer.decode(
+                combined_ids, skip_special_tokens=False
+            )
+            if combined_text != before_decision + decision.text:
+                raise ValueError(
+                    "decision token IDs are not compositional with the head"
+                )
+            token_ids = combined_ids
+            text += decision.text
+            used_decision_repair = not decision.stop_found
+            if used_decision_repair:
+                append_fixed(DECISION_CLOSE)
+
+        append_fixed(ACTION_OPEN)
+        expected = self.tokenizer.decode(token_ids, skip_special_tokens=False)
+        if expected != text:
+            raise ValueError("assembled head text does not match its exact token IDs")
+
+        decision_stop_found = decision.stop_found if decision is not None else True
+        decision_truncated = decision.truncated if decision is not None else False
+        return HeadGeneration(
+            chunk=GeneratedChunk(
+                text=text,
+                token_ids=tuple(token_ids),
+                stop_found=thought.stop_found and decision_stop_found,
+                truncated=thought.truncated or decision_truncated,
+                latency_seconds=(
+                    thought.latency_seconds
+                    + (decision.latency_seconds if decision is not None else 0.0)
+                ),
+            ),
+            thought_chunk=thought,
+            decision_chunk=decision,
+            used_thought_repair=used_thought_repair,
+            used_decision_repair=used_decision_repair,
+        )
+
+    def _generate_head(
+        self, prompt_text: str, *, use_decision: bool, greedy: bool
+    ) -> HeadGeneration:
         temperature = None if greedy else self.cfg.rollout_temperature
-        return self._generate_until(
+        thought = self._generate_until(
             prompt_text,
-            [ACTION_OPEN],
-            self.cfg.max_head_tokens,
+            [THINK_CLOSE],
+            self.cfg.max_thought_tokens,
             temperature,
         )
+        thought_text = thought.text + (THINK_CLOSE if not thought.stop_found else "")
+        decision = None
+        if use_decision:
+            decision = self._generate_until(
+                prompt_text + thought_text + DECISION_OPEN,
+                [DECISION_CLOSE],
+                self.cfg.max_decision_tokens,
+                temperature,
+            )
+        return self._assemble_head(thought, decision, use_decision=use_decision)
 
     def generate_turn_unconstrained(
         self, prompt_text: str, *, use_decision: bool, greedy: bool = False
     ) -> TurnGeneration:
         """Sample raw model data for evaluation controls or HMM distillation."""
 
-        head = self._generate_head(prompt_text, greedy=greedy)
-        used_head_repair = ACTION_OPEN not in head.text
-        action_prompt = prompt_text + head.text
-        if used_head_repair:
-            action_prompt += ACTION_OPEN
+        head = self._generate_head(
+            prompt_text, use_decision=use_decision, greedy=greedy
+        )
+        action_prompt = prompt_text + head.chunk.text
 
         temperature = None if greedy else self.cfg.rollout_temperature
         tail = self._generate_until(
@@ -142,7 +228,6 @@ class BaseBackend:
             head,
             tail,
             use_decision=use_decision,
-            used_head_repair=used_head_repair,
         )
 
     def generate_turns_unconstrained(
@@ -167,21 +252,27 @@ class BaseBackend:
 
     def _assemble_unconstrained_turn(
         self,
-        head: GeneratedChunk,
+        head: HeadGeneration,
         tail: GeneratedChunk,
         *,
         use_decision: bool,
-        used_head_repair: bool,
         head_seed: int | None = None,
+        decision_seed: int | None = None,
         tail_seed: int | None = None,
     ) -> TurnGeneration:
         """Parse and retain the exact token spans from a head/tail pair."""
 
-        parsed = parse_turn(head.text, tail.text, use_decision=use_decision)
+        parsed = parse_turn(
+            head.chunk.text, tail.text, use_decision=use_decision
+        )
 
         try:
             prefix_ids = tuple(
-                hmm_prefix_token_ids(self.tokenizer, list(head.token_ids), head.text)
+                hmm_prefix_token_ids(
+                    self.tokenizer,
+                    list(head.chunk.token_ids),
+                    head.chunk.text,
+                )
             )
         except ValueError:
             prefix_ids = ()
@@ -198,21 +289,48 @@ class BaseBackend:
             pass
         return TurnGeneration(
             parsed=parsed,
-            head_token_ids=head.token_ids,
+            head_token_ids=head.chunk.token_ids,
             action_token_ids=action_ids,
             tail_token_ids=tail.token_ids,
             hmm_prefix_token_ids=prefix_ids,
-            head_latency_seconds=head.latency_seconds,
+            head_latency_seconds=head.chunk.latency_seconds,
             action_latency_seconds=tail.latency_seconds,
-            used_head_repair=used_head_repair,
+            used_head_repair=head.used_repair,
             hmm_applied=False,
-            head_stop_found=head.stop_found,
-            head_truncated=head.truncated,
+            head_stop_found=head.chunk.stop_found,
+            head_truncated=head.chunk.truncated,
             tail_stop_found=tail.stop_found,
             tail_truncated=tail.truncated,
             tail_span_exact=tail_span_exact,
             head_seed=head_seed,
+            decision_seed=decision_seed,
             tail_seed=tail_seed,
+            thought_token_ids=head.thought_chunk.token_ids,
+            decision_token_ids=(
+                head.decision_chunk.token_ids
+                if head.decision_chunk is not None
+                else ()
+            ),
+            thought_latency_seconds=head.thought_chunk.latency_seconds,
+            decision_latency_seconds=(
+                head.decision_chunk.latency_seconds
+                if head.decision_chunk is not None
+                else 0.0
+            ),
+            thought_stop_found=head.thought_chunk.stop_found,
+            thought_truncated=head.thought_chunk.truncated,
+            decision_stop_found=(
+                head.decision_chunk.stop_found
+                if head.decision_chunk is not None
+                else True
+            ),
+            decision_truncated=(
+                head.decision_chunk.truncated
+                if head.decision_chunk is not None
+                else False
+            ),
+            used_thought_repair=head.used_thought_repair,
+            used_decision_repair=head.used_decision_repair,
         )
 
 
@@ -430,15 +548,14 @@ class HFBackend(BaseBackend):
     ) -> TurnGeneration:
         """Generate a native-think head, then a hard-constrained action."""
 
-        head = self._generate_head(prompt_text, greedy=greedy_head)
-        used_head_repair = ACTION_OPEN not in head.text
-        action_prompt = prompt_text + head.text
-        if used_head_repair:
-            action_prompt += ACTION_OPEN
+        head = self._generate_head(
+            prompt_text, use_decision=use_decision, greedy=greedy_head
+        )
+        action_prompt = prompt_text + head.chunk.text
 
         try:
             prefix_ids = hmm_prefix_token_ids(
-                self.tokenizer, list(head.token_ids), head.text
+                self.tokenizer, list(head.chunk.token_ids), head.chunk.text
             )
         except ValueError:
             prefix_ids = []
@@ -448,8 +565,10 @@ class HFBackend(BaseBackend):
         # parse failure instead of silently feeding a synthetic HMM prefix.
         hmm_skip_reason = None
         if use_hmm:
-            if used_head_repair:
-                hmm_skip_reason = "synthetic_action_open"
+            if head.used_thought_repair:
+                hmm_skip_reason = "synthetic_think_close"
+            elif head.used_decision_repair:
+                hmm_skip_reason = "synthetic_decision_close"
             elif not prefix_ids:
                 hmm_skip_reason = "missing_exact_hmm_prefix"
             elif (
@@ -477,7 +596,7 @@ class HFBackend(BaseBackend):
             tail_truncated = action_chunk.truncated
             tail_span_exact = action_chunk.text.endswith(ACTION_CLOSE)
             parsed_action = parse_turn(
-                head.text, raw_tail, use_decision=use_decision
+                head.chunk.text, raw_tail, use_decision=use_decision
             ).action
             action_ids = tuple(
                 tokenize_continuation(
@@ -485,27 +604,55 @@ class HFBackend(BaseBackend):
                 )
             )
 
-        parsed = parse_turn(head.text, raw_tail, use_decision=use_decision)
+        parsed = parse_turn(
+            head.chunk.text, raw_tail, use_decision=use_decision
+        )
         if parsed.action not in allowed_actions:
             raise RuntimeError(
                 f"hard DFA emitted non-admissible action {parsed.action!r}"
             )
         return TurnGeneration(
             parsed=parsed,
-            head_token_ids=head.token_ids,
+            head_token_ids=head.chunk.token_ids,
             action_token_ids=tuple(action_ids),
             tail_token_ids=tuple(tail_ids),
             hmm_prefix_token_ids=tuple(prefix_ids),
-            head_latency_seconds=head.latency_seconds,
+            head_latency_seconds=head.chunk.latency_seconds,
             action_latency_seconds=action_latency,
-            used_head_repair=used_head_repair,
+            used_head_repair=head.used_repair,
             hmm_applied=effective_hmm,
             hmm_skip_reason=hmm_skip_reason,
-            head_stop_found=head.stop_found,
-            head_truncated=head.truncated,
+            head_stop_found=head.chunk.stop_found,
+            head_truncated=head.chunk.truncated,
             tail_stop_found=tail_stop_found,
             tail_truncated=tail_truncated,
             tail_span_exact=tail_span_exact,
+            thought_token_ids=head.thought_chunk.token_ids,
+            decision_token_ids=(
+                head.decision_chunk.token_ids
+                if head.decision_chunk is not None
+                else ()
+            ),
+            thought_latency_seconds=head.thought_chunk.latency_seconds,
+            decision_latency_seconds=(
+                head.decision_chunk.latency_seconds
+                if head.decision_chunk is not None
+                else 0.0
+            ),
+            thought_stop_found=head.thought_chunk.stop_found,
+            thought_truncated=head.thought_chunk.truncated,
+            decision_stop_found=(
+                head.decision_chunk.stop_found
+                if head.decision_chunk is not None
+                else True
+            ),
+            decision_truncated=(
+                head.decision_chunk.truncated
+                if head.decision_chunk is not None
+                else False
+            ),
+            used_thought_repair=head.used_thought_repair,
+            used_decision_repair=head.used_decision_repair,
         )
 
 
@@ -657,53 +804,88 @@ class VLLMBackend(BaseBackend):
         greedy: bool = False,
         seed_context: tuple[int, ...] = (),
     ) -> list[TurnGeneration]:
-        """Generate candidates in one head batch followed by one tail batch."""
+        """Batch thought, decision, and action phases while preserving order."""
 
         if count < 1:
             raise ValueError("count must be at least one")
         temperature = None if greedy else self.cfg.rollout_temperature
-        head_seeds = [
-            self._stable_seed(self.cfg.seed, seed_context, candidate_index, "head")
+        thought_seeds = [
+            self._stable_seed(
+                self.cfg.seed, seed_context, candidate_index, "thought"
+            )
             for candidate_index in range(count)
         ]
-        tail_seeds = [
-            self._stable_seed(self.cfg.seed, seed_context, candidate_index, "tail")
+        decision_seeds = [
+            self._stable_seed(
+                self.cfg.seed, seed_context, candidate_index, "decision"
+            )
+            for candidate_index in range(count)
+        ]
+        action_seeds = [
+            self._stable_seed(
+                self.cfg.seed, seed_context, candidate_index, "action"
+            )
             for candidate_index in range(count)
         ]
 
-        heads = self._generate_batch_until(
+        thoughts = self._generate_batch_until(
             [prompt_text] * count,
-            [ACTION_OPEN],
-            self.cfg.max_head_tokens,
+            [THINK_CLOSE],
+            self.cfg.max_thought_tokens,
             temperature,
-            head_seeds,
+            thought_seeds,
         )
-        used_head_repairs = [ACTION_OPEN not in head.text for head in heads]
+        if use_decision:
+            decision_prompts = [
+                prompt_text
+                + thought.text
+                + (THINK_CLOSE if not thought.stop_found else "")
+                + DECISION_OPEN
+                for thought in thoughts
+            ]
+            decisions: list[GeneratedChunk | None] = list(
+                self._generate_batch_until(
+                    decision_prompts,
+                    [DECISION_CLOSE],
+                    self.cfg.max_decision_tokens,
+                    temperature,
+                    decision_seeds,
+                )
+            )
+        else:
+            decisions = [None] * count
+            decision_seeds = [None] * count
+
+        heads = [
+            self._assemble_head(
+                thought, decision, use_decision=use_decision
+            )
+            for thought, decision in zip(thoughts, decisions)
+        ]
         action_prompts = [
-            prompt_text + head.text + (ACTION_OPEN if used_head_repair else "")
-            for head, used_head_repair in zip(heads, used_head_repairs)
+            prompt_text + head.chunk.text for head in heads
         ]
         tails = self._generate_batch_until(
             action_prompts,
             [ACTION_CLOSE],
             self.cfg.max_action_tokens,
             temperature,
-            tail_seeds,
+            action_seeds,
         )
         return [
             self._assemble_unconstrained_turn(
                 head,
                 tail,
                 use_decision=use_decision,
-                used_head_repair=used_head_repair,
-                head_seed=head_seed,
-                tail_seed=tail_seed,
+                head_seed=thought_seed,
+                decision_seed=decision_seed,
+                tail_seed=action_seed,
             )
-            for head, tail, used_head_repair, head_seed, tail_seed in zip(
+            for head, tail, thought_seed, decision_seed, action_seed in zip(
                 heads,
                 tails,
-                used_head_repairs,
-                head_seeds,
-                tail_seeds,
+                thought_seeds,
+                decision_seeds,
+                action_seeds,
             )
         ]

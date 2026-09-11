@@ -11,7 +11,8 @@ from ctrlg_alfworld.experiment import condition_choices, get_condition
 
 
 COMPARABILITY_FIELDS = (
-    "model", "split", "seed", "max_steps", "beam_size", "max_head_tokens",
+    "model", "split", "seed", "max_steps", "beam_size", "max_thought_tokens",
+    "max_decision_tokens",
     "max_action_tokens", "min_action_tokens", "temperature",
     "rollout_temperature", "max_hmm_prefix_tokens", "num_episodes",
     "sample_actions", "sample_head", "show_admissible_actions", "device",

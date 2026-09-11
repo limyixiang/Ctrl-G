@@ -7,7 +7,8 @@ experiment:
   show_admissible_actions: false
   seed: 42
   max_steps: 50
-  max_head_tokens: 512
+  max_thought_tokens: 1024
+  max_decision_tokens: 64
   max_action_tokens: 24
   min_action_tokens: 1
   beam_size: 8

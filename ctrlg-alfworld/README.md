@@ -83,9 +83,13 @@ Only decision-format samples are collected. The metadata reports eligible
 counts and exclusion reasons. The vLLM backend requires exact returned token
 IDs and fails rather than retokenizing generated text.
 
-For each environment state, vLLM collection runs two concurrent generation
-phases: all candidate heads first, followed by all candidate action tails. The
-environment is stepped only after every candidate has been saved, using the
+For each environment state, vLLM collection runs three continuously batched
+generation phases: all candidate thoughts, then all decisions, then all action
+tails. Thought, decision, and action generation have independent limits of
+1024, 64, and 24 tokens. Fixed delimiters guarantee that a long native thought
+cannot consume the decision allowance. Any synthetic closing delimiter is
+recorded and excludes that candidate from distillation and environment advance.
+The environment is stepped only after every candidate has been saved, using the
 first well-formed admissible candidate. Candidate seeds are derived from the
 base seed, episode, step, candidate index, and phase, and are stored alongside
 each sample; completion order cannot change candidate identity.

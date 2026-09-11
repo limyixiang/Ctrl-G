@@ -71,6 +71,77 @@ def make_backend():
 
 
 class BackendIntegrationTests(unittest.TestCase):
+    def test_head_generation_uses_independent_thought_and_decision_budgets(self):
+        tokenizer = AsciiTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer = tokenizer
+        backend.cfg = GenConfig(max_thought_tokens=7, max_decision_tokens=5)
+        calls = []
+
+        def generate(prompt, stops, max_new_tokens, temperature):
+            calls.append((prompt, list(stops), max_new_tokens, temperature))
+            text = "reason</think>" if len(calls) == 1 else "go</decision>"
+            return GeneratedChunk(
+                text=text,
+                token_ids=tuple(tokenizer.encode(text)),
+                stop_found=True,
+                truncated=False,
+                latency_seconds=0.01,
+            )
+
+        backend._generate_until = generate
+        head = backend._generate_head(
+            "P<think>", use_decision=True, greedy=False
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                ("P<think>", ["</think>"], 7, 0.7),
+                (
+                    "P<think>reason</think><decision>",
+                    ["</decision>"],
+                    5,
+                    0.7,
+                ),
+            ],
+        )
+        self.assertEqual(
+            head.chunk.text,
+            "reason</think><decision>go</decision><action>",
+        )
+        self.assertFalse(head.used_repair)
+
+    def test_head_generation_repairs_each_phase_without_spending_next_budget(self):
+        tokenizer = AsciiTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer = tokenizer
+        backend.cfg = GenConfig(max_thought_tokens=7, max_decision_tokens=5)
+        outputs = iter(("reason", "go"))
+
+        def generate(prompt, stops, max_new_tokens, temperature):
+            text = next(outputs)
+            return GeneratedChunk(
+                text=text,
+                token_ids=tuple(tokenizer.encode(text)),
+                stop_found=False,
+                truncated=True,
+                latency_seconds=0.01,
+            )
+
+        backend._generate_until = generate
+        head = backend._generate_head(
+            "P<think>", use_decision=True, greedy=True
+        )
+
+        self.assertEqual(
+            head.chunk.text,
+            "reason</think><decision>go</decision><action>",
+        )
+        self.assertTrue(head.used_thought_repair)
+        self.assertTrue(head.used_decision_repair)
+        self.assertTrue(head.chunk.truncated)
+
     def _run_mocked_hmm_temperature_case(self, *, do_sample):
         tokenizer = AsciiTokenizer()
         backend = object.__new__(HFBackend)
@@ -142,15 +213,16 @@ class BackendIntegrationTests(unittest.TestCase):
         backend = object.__new__(HFBackend)
         backend.tokenizer = tokenizer
         backend.cfg = GenConfig()
-        head_text = "reason</think><action>"
         tail_text = "a</action>"
-        backend._generate_head = lambda prompt, greedy: GeneratedChunk(
-            text=head_text,
-            token_ids=tuple(tokenizer.encode(head_text)),
+        thought = GeneratedChunk(
+            text="reason</think>",
+            token_ids=tuple(tokenizer.encode("reason</think>")),
             stop_found=True,
             truncated=False,
             latency_seconds=0.01,
         )
+        head = backend._assemble_head(thought, None, use_decision=False)
+        backend._generate_head = lambda prompt, use_decision, greedy: head
         backend._generate_dfa_action = lambda *args, **kwargs: self.fail(
             "DFA fallback should not run when the prefix limit is omitted"
         )
@@ -176,15 +248,23 @@ class BackendIntegrationTests(unittest.TestCase):
         backend = object.__new__(HFBackend)
         backend.tokenizer = tokenizer
         backend.cfg = GenConfig(max_hmm_prefix_tokens=1)
-        head_text = "reason</think><decision>x</decision><action>"
         tail_text = "a</action>"
-        backend._generate_head = lambda prompt, greedy: GeneratedChunk(
-            text=head_text,
-            token_ids=tuple(tokenizer.encode(head_text)),
+        thought = GeneratedChunk(
+            text="reason</think>",
+            token_ids=tuple(tokenizer.encode("reason</think>")),
             stop_found=True,
             truncated=False,
             latency_seconds=0.01,
         )
+        decision = GeneratedChunk(
+            text="x</decision>",
+            token_ids=tuple(tokenizer.encode("x</decision>")),
+            stop_found=True,
+            truncated=False,
+            latency_seconds=0.01,
+        )
+        head = backend._assemble_head(thought, decision, use_decision=True)
+        backend._generate_head = lambda prompt, use_decision, greedy: head
         backend._generate_dfa_action = lambda prompt, actions: GeneratedChunk(
             text=tail_text,
             token_ids=tuple(tokenizer.encode(tail_text)),
@@ -260,33 +340,43 @@ class BackendIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(backend.client.completions.kwargs["extra_body"]["seed"], 123)
 
-    def test_vllm_batches_heads_then_tails_with_stable_candidate_seeds(self):
+    def test_vllm_batches_three_phases_with_stable_candidate_seeds(self):
         tokenizer = AsciiTokenizer()
         backend = object.__new__(VLLMBackend)
         backend.tokenizer = tokenizer
         backend.cfg = GenConfig(
-            max_head_tokens=64,
+            max_thought_tokens=64,
+            max_decision_tokens=32,
             max_action_tokens=16,
             rollout_temperature=0.7,
             seed=42,
         )
         calls = []
-        head_texts = [
-            "reason 0</think><decision>d0</decision><action>",
-            "reason 1</think><decision>d1</decision>",
+        thought_texts = [
+            "reason 0</think>",
+            "reason 1",
         ]
+        decision_texts = ["d0</decision>", "d1"]
         tail_texts = ["look</action>", "inventory</action>"]
 
-        def chunks(texts):
+        def chunks(texts, *, stop_found=True):
             return [
                 GeneratedChunk(
                     text=text,
                     token_ids=tuple(tokenizer.encode(text)),
-                    stop_found=True,
-                    truncated=False,
+                    stop_found=(
+                        stop_found[index]
+                        if isinstance(stop_found, list)
+                        else stop_found
+                    ),
+                    truncated=not (
+                        stop_found[index]
+                        if isinstance(stop_found, list)
+                        else stop_found
+                    ),
                     latency_seconds=0.01,
                 )
-                for text in texts
+                for index, text in enumerate(texts)
             ]
 
         def generate_batch(prompts, stop_strings, max_new_tokens, temperature, seeds):
@@ -299,7 +389,11 @@ class BackendIntegrationTests(unittest.TestCase):
                     list(seeds),
                 )
             )
-            return chunks(head_texts if len(calls) == 1 else tail_texts)
+            if len(calls) == 1:
+                return chunks(thought_texts, stop_found=[True, False])
+            if len(calls) == 2:
+                return chunks(decision_texts, stop_found=[True, False])
+            return chunks(tail_texts)
 
         backend._generate_batch_until = generate_batch
         turns = backend.generate_turns_unconstrained(
@@ -309,30 +403,55 @@ class BackendIntegrationTests(unittest.TestCase):
             seed_context=(3, 4),
         )
 
-        expected_head_seeds = [
-            VLLMBackend._stable_seed(42, (3, 4), index, "head") for index in range(2)
+        expected_thought_seeds = [
+            VLLMBackend._stable_seed(42, (3, 4), index, "thought")
+            for index in range(2)
         ]
-        expected_tail_seeds = [
-            VLLMBackend._stable_seed(42, (3, 4), index, "tail") for index in range(2)
+        expected_decision_seeds = [
+            VLLMBackend._stable_seed(42, (3, 4), index, "decision")
+            for index in range(2)
         ]
-        self.assertEqual(len(calls), 2)
+        expected_action_seeds = [
+            VLLMBackend._stable_seed(42, (3, 4), index, "action")
+            for index in range(2)
+        ]
+        self.assertEqual(len(calls), 3)
         self.assertEqual(calls[0][0], ["P<think>", "P<think>"])
-        self.assertEqual(calls[0][1], ["<action>"])
-        self.assertEqual(calls[0][4], expected_head_seeds)
+        self.assertEqual(calls[0][1], ["</think>"])
+        self.assertEqual(calls[0][2], 64)
+        self.assertEqual(calls[0][4], expected_thought_seeds)
         self.assertEqual(
             calls[1][0],
             [
-                "P<think>" + head_texts[0],
-                "P<think>" + head_texts[1] + "<action>",
+                "P<think>reason 0</think><decision>",
+                "P<think>reason 1</think><decision>",
             ],
         )
-        self.assertEqual(calls[1][1], ["</action>"])
-        self.assertEqual(calls[1][4], expected_tail_seeds)
+        self.assertEqual(calls[1][1], ["</decision>"])
+        self.assertEqual(calls[1][2], 32)
+        self.assertEqual(calls[1][4], expected_decision_seeds)
+        self.assertEqual(
+            calls[2][0],
+            [
+                "P<think>reason 0</think><decision>d0</decision><action>",
+                "P<think>reason 1</think><decision>d1</decision><action>",
+            ],
+        )
+        self.assertEqual(calls[2][1], ["</action>"])
+        self.assertEqual(calls[2][4], expected_action_seeds)
         self.assertEqual([turn.parsed.action for turn in turns], ["look", "inventory"])
         self.assertEqual([turn.used_head_repair for turn in turns], [False, True])
-        self.assertEqual([turn.head_seed for turn in turns], expected_head_seeds)
-        self.assertEqual([turn.tail_seed for turn in turns], expected_tail_seeds)
-        self.assertEqual(len(set(expected_head_seeds + expected_tail_seeds)), 4)
+        self.assertEqual([turn.used_thought_repair for turn in turns], [False, True])
+        self.assertEqual([turn.used_decision_repair for turn in turns], [False, True])
+        self.assertEqual([turn.head_seed for turn in turns], expected_thought_seeds)
+        self.assertEqual(
+            [turn.decision_seed for turn in turns], expected_decision_seeds
+        )
+        self.assertEqual([turn.tail_seed for turn in turns], expected_action_seeds)
+        all_seeds = (
+            expected_thought_seeds + expected_decision_seeds + expected_action_seeds
+        )
+        self.assertEqual(len(set(all_seeds)), 6)
 
     def test_vllm_batch_requests_are_concurrent_and_results_stay_ordered(self):
         tokenizer = AsciiTokenizer()
@@ -370,17 +489,17 @@ class BackendIntegrationTests(unittest.TestCase):
     def test_vllm_candidate_seeds_are_reproducible_and_context_specific(self):
         first = [
             VLLMBackend._stable_seed(42, (1, 2), index, phase)
-            for phase in ("head", "tail")
+            for phase in ("thought", "decision", "action")
             for index in range(4)
         ]
         second = [
             VLLMBackend._stable_seed(42, (1, 2), index, phase)
-            for phase in ("head", "tail")
+            for phase in ("thought", "decision", "action")
             for index in range(4)
         ]
         other_step = [
             VLLMBackend._stable_seed(42, (1, 3), index, phase)
-            for phase in ("head", "tail")
+            for phase in ("thought", "decision", "action")
             for index in range(4)
         ]
         self.assertEqual(first, second)

@@ -12,8 +12,11 @@ run_rollouts = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(run_rollouts)
 
 
-def make_turn(*, parse_ok, action):
-    return SimpleNamespace(parsed=SimpleNamespace(parse_ok=parse_ok, action=action))
+def make_turn(*, parse_ok, action, used_head_repair=False):
+    return SimpleNamespace(
+        parsed=SimpleNamespace(parse_ok=parse_ok, action=action),
+        used_head_repair=used_head_repair,
+    )
 
 
 class RolloutCollectionTests(unittest.TestCase):
@@ -319,6 +322,18 @@ class RolloutCollectionTests(unittest.TestCase):
                 [(0, malformed), (1, well_formed)], ["look"]
             ),
             (1, well_formed),
+        )
+
+    def test_selection_skips_structurally_repaired_turn(self):
+        repaired = make_turn(
+            parse_ok=True, action="look", used_head_repair=True
+        )
+        natural = make_turn(parse_ok=True, action="look")
+        self.assertEqual(
+            run_rollouts.select_advance_turn(
+                [(0, repaired), (1, natural)], ["look"]
+            ),
+            (1, natural),
         )
 
     def test_selection_returns_none_without_well_formed_admissible_turn(self):

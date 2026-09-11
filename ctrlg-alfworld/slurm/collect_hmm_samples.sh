@@ -91,7 +91,8 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --samples_per_state "$SAMPLES_PER_STATE" \
   --temperature "$TEMPERATURE" \
   --max_hmm_sequence_tokens 256 \
-  --max_head_tokens 1024 \
+  --max_thought_tokens 1024 \
+  --max_decision_tokens 64 \
   "${PROMPT_ARGS[@]}" \
   "${OUTPUT_ARGS[@]}" \
   --out "$OUTPUT"

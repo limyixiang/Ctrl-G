@@ -89,7 +89,8 @@ def main():
     parser.add_argument("--max_steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--beam_size", type=int, default=8)
-    parser.add_argument("--max_head_tokens", type=int, default=512)
+    parser.add_argument("--max_thought_tokens", type=int, default=1024)
+    parser.add_argument("--max_decision_tokens", type=int, default=64)
     parser.add_argument("--max_action_tokens", type=int, default=24)
     parser.add_argument("--min_action_tokens", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -150,7 +151,8 @@ def main():
 
     skillset = SkillSet.from_file(args.skills)
     generation_config = GenConfig(
-        max_head_tokens=args.max_head_tokens,
+        max_thought_tokens=args.max_thought_tokens,
+        max_decision_tokens=args.max_decision_tokens,
         max_action_tokens=args.max_action_tokens,
         min_action_tokens=args.min_action_tokens,
         beam_size=args.beam_size,
@@ -183,11 +185,19 @@ def main():
         "parsed_turns": 0,
         "hmm_applied_turns": 0,
         "head_truncated_turns": 0,
+        "thought_truncated_turns": 0,
+        "decision_truncated_turns": 0,
+        "thought_repair_turns": 0,
+        "decision_repair_turns": 0,
         "tail_truncated_turns": 0,
         "exact_tail_span_turns": 0,
         "prompt_tokens": 0,
+        "thought_tokens": 0,
+        "decision_tokens": 0,
         "generated_tokens": 0,
         "head_latency_seconds": 0.0,
+        "thought_latency_seconds": 0.0,
+        "decision_latency_seconds": 0.0,
         "action_latency_seconds": 0.0,
     }
 
@@ -217,11 +227,19 @@ def main():
                 totals["parsed_turns"] += int(step.parse_ok)
                 totals["hmm_applied_turns"] += int(step.hmm_applied)
                 totals["head_truncated_turns"] += int(step.head_truncated)
+                totals["thought_truncated_turns"] += int(step.thought_truncated)
+                totals["decision_truncated_turns"] += int(step.decision_truncated)
+                totals["thought_repair_turns"] += int(step.used_thought_repair)
+                totals["decision_repair_turns"] += int(step.used_decision_repair)
                 totals["tail_truncated_turns"] += int(step.tail_truncated)
                 totals["exact_tail_span_turns"] += int(step.tail_span_exact)
                 totals["prompt_tokens"] += step.prompt_tokens
+                totals["thought_tokens"] += step.thought_tokens
+                totals["decision_tokens"] += step.decision_tokens
                 totals["generated_tokens"] += step.generated_tokens
                 totals["head_latency_seconds"] += step.head_latency_seconds
+                totals["thought_latency_seconds"] += step.thought_latency_seconds
+                totals["decision_latency_seconds"] += step.decision_latency_seconds
                 totals["action_latency_seconds"] += step.action_latency_seconds
 
             action_count = max(totals["actions"], 1)
@@ -255,7 +273,8 @@ def main():
         "seed": args.seed,
         "max_steps": args.max_steps,
         "beam_size": args.beam_size,
-        "max_head_tokens": args.max_head_tokens,
+        "max_thought_tokens": args.max_thought_tokens,
+        "max_decision_tokens": args.max_decision_tokens,
         "max_action_tokens": args.max_action_tokens,
         "min_action_tokens": args.min_action_tokens,
         "temperature": args.temperature,
@@ -283,11 +302,31 @@ def main():
             "parse_rate": totals["parsed_turns"] / action_count,
             "hmm_applied_rate": totals["hmm_applied_turns"] / action_count,
             "head_truncation_rate": totals["head_truncated_turns"] / action_count,
+            "thought_truncation_rate": (
+                totals["thought_truncated_turns"] / action_count
+            ),
+            "decision_truncation_rate": (
+                totals["decision_truncated_turns"] / action_count
+            ),
+            "thought_repair_rate": totals["thought_repair_turns"] / action_count,
+            "decision_repair_rate": totals["decision_repair_turns"] / action_count,
             "tail_truncation_rate": totals["tail_truncated_turns"] / action_count,
             "exact_tail_span_rate": totals["exact_tail_span_turns"] / action_count,
             "mean_prompt_tokens_per_action": totals["prompt_tokens"] / action_count,
+            "mean_thought_tokens_per_action": (
+                totals["thought_tokens"] / action_count
+            ),
+            "mean_decision_tokens_per_action": (
+                totals["decision_tokens"] / action_count
+            ),
             "mean_generated_tokens_per_action": totals["generated_tokens"] / action_count,
             "mean_head_latency_seconds": totals["head_latency_seconds"] / action_count,
+            "mean_thought_latency_seconds": (
+                totals["thought_latency_seconds"] / action_count
+            ),
+            "mean_decision_latency_seconds": (
+                totals["decision_latency_seconds"] / action_count
+            ),
             "mean_action_latency_seconds": totals["action_latency_seconds"] / action_count,
         },
         "per_task_type": {

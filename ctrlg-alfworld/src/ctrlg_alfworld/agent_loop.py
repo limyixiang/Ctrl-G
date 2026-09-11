@@ -49,7 +49,11 @@ class StepRecord:
     parse_ok: bool
     parse_errors: list[str]
     used_head_repair: bool
+    used_thought_repair: bool
+    used_decision_repair: bool
     head_truncated: bool
+    thought_truncated: bool
+    decision_truncated: bool
     tail_truncated: bool
     tail_span_exact: bool
     hmm_applied: bool
@@ -59,8 +63,12 @@ class StepRecord:
     action_token_ids: list[int]
     tail_token_ids: list[int]
     prompt_tokens: int
+    thought_tokens: int
+    decision_tokens: int
     generated_tokens: int
     head_latency_seconds: float
+    thought_latency_seconds: float
+    decision_latency_seconds: float
     action_latency_seconds: float
 
 
@@ -152,7 +160,11 @@ def run_episode(
             parse_ok=turn.parsed.parse_ok,
             parse_errors=list(turn.parsed.errors),
             used_head_repair=turn.used_head_repair,
+            used_thought_repair=turn.used_thought_repair,
+            used_decision_repair=turn.used_decision_repair,
             head_truncated=turn.head_truncated,
+            thought_truncated=turn.thought_truncated,
+            decision_truncated=turn.decision_truncated,
             tail_truncated=turn.tail_truncated,
             tail_span_exact=turn.tail_span_exact,
             hmm_applied=turn.hmm_applied,
@@ -162,8 +174,12 @@ def run_episode(
             action_token_ids=list(turn.action_token_ids),
             tail_token_ids=list(turn.tail_token_ids),
             prompt_tokens=prompt_tokens,
+            thought_tokens=len(turn.thought_token_ids),
+            decision_tokens=len(turn.decision_token_ids),
             generated_tokens=turn.total_generated_tokens,
             head_latency_seconds=turn.head_latency_seconds,
+            thought_latency_seconds=turn.thought_latency_seconds,
+            decision_latency_seconds=turn.decision_latency_seconds,
             action_latency_seconds=turn.action_latency_seconds,
         ))
         steps.append(Step(
