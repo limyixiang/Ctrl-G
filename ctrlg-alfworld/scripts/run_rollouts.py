@@ -269,8 +269,12 @@ def _history_matches_episode(history_record: dict, episode_record: dict) -> bool
     ):
         return False
     return all(
-        history_step.get("action") == trace_step.get("action")
+        history_step.get("action_taken", history_step.get("action"))
+        == trace_step.get("action_taken", trace_step.get("action"))
         and history_step.get("decision", "") == trace_step.get("decision", "")
+        and history_step.get("selected_sample") == trace_step.get("sample")
+        and history_step.get("fallback_reason")
+        == trace_step.get("fallback_reason")
         and history_step.get("observation") == trace_step.get("observation")
         for history_step, trace_step in zip(steps, advance_trace)
     )
@@ -662,7 +666,7 @@ def main():
         ),
         "environment_seed_scheme": "sorted_gamefiles_then_textworld_seed",
         "game_files_sha256": json_sha256(env_factory.game_files),
-        "history_format": "episode_jsonl_v1",
+        "history_format": "episode_jsonl_v2_candidate_audit",
         "device": args.device if args.backend == "hf" else "vllm_server",
         "dtype": args.dtype if args.backend == "hf" else "vllm_server",
         "config": str(Path(args.config).resolve()),
@@ -766,6 +770,7 @@ def main():
             task_key = task_key_from_gamefile(gamefile)
             observation = initial_observation
             history: list[Step] = []
+            history_audit = []
             success = False
             advance_sources = []
             advance_trace = []
@@ -778,6 +783,7 @@ def main():
                     raise RuntimeError("TextWorld returned no admissible commands")
 
                 sampled_turns = []
+                candidate_audit = []
                 for use_decision in (True,):
                     user_prompt = build_user_prompt(
                         skill_content=skillset.raw_markdown,
@@ -816,6 +822,20 @@ def main():
                             max_hmm_sequence_tokens=args.max_hmm_sequence_tokens,
                         )
                         distill_eligible = not exclusion_reasons
+                        candidate_audit.append(
+                            {
+                                "sample": sample_index,
+                                "model_decision": turn.parsed.decision,
+                                "model_action": turn.parsed.action,
+                                "action_was_admissible": (
+                                    turn.parsed.action in admissible_actions
+                                ),
+                                "parse_ok": turn.parsed.parse_ok,
+                                "parse_errors": list(turn.parsed.errors),
+                                "distill_eligible": distill_eligible,
+                                "distill_exclusion_reasons": exclusion_reasons,
+                            }
+                        )
                         record = {
                             "episode": episode_index,
                             "step": step_index,
@@ -886,12 +906,20 @@ def main():
                     advance_source = "deterministic_admissible_fallback"
                     advance_thought = ""
                     advance_decision = ""
+                    selected_model_decision = None
+                    selected_model_action = None
+                    fallback_reason = "no_sampled_action_was_admissible"
+                    fallback_policy = "look_if_admissible_else_first_admissible"
                 else:
                     advance_sample, selected_turn = selected
                     advance_action = selected_turn.parsed.action
                     advance_source = "admissible_raw_model_sample"
                     advance_thought = selected_turn.parsed.thought
                     advance_decision = selected_turn.parsed.decision
+                    selected_model_decision = selected_turn.parsed.decision
+                    selected_model_action = selected_turn.parsed.action
+                    fallback_reason = None
+                    fallback_policy = None
 
                 next_observation, _, done, info = env.step([advance_action])
                 observation = process_ob(next_observation[0])
@@ -903,6 +931,24 @@ def main():
                         observation=observation,
                     )
                 )
+                history_audit.append(
+                    {
+                        "step": step_index,
+                        "candidates": candidate_audit,
+                        "selected_sample": advance_sample,
+                        "selected_model_decision": selected_model_decision,
+                        "selected_model_action": selected_model_action,
+                        "action_taken": advance_action,
+                        "fallback_used": selected is None,
+                        "fallback_reason": fallback_reason,
+                        "fallback_policy": fallback_policy,
+                        # Retain the original fields for simple readers and
+                        # completed-episode resume reconciliation.
+                        "decision": advance_decision,
+                        "action": advance_action,
+                        "observation": observation,
+                    }
+                )
                 advance_sources.append(advance_source)
                 advance_source_counts[advance_source] += 1
                 advance_trace.append(
@@ -910,8 +956,13 @@ def main():
                         "step": step_index,
                         "sample": advance_sample,
                         "source": advance_source,
+                        "selected_model_decision": selected_model_decision,
+                        "selected_model_action": selected_model_action,
                         "action": advance_action,
+                        "action_taken": advance_action,
                         "decision": advance_decision,
+                        "fallback_reason": fallback_reason,
+                        "fallback_policy": fallback_policy,
                         "observation": observation,
                     }
                 )
@@ -937,14 +988,7 @@ def main():
                 "success": success,
                 "initial_observation": initial_observation,
                 "task_description": task_description,
-                "steps": [
-                    {
-                        "decision": step.decision,
-                        "action": step.action,
-                        "observation": step.observation,
-                    }
-                    for step in history
-                ],
+                "steps": history_audit,
             }
             history_file.write(json.dumps(history_record) + "\n")
             history_file.flush()

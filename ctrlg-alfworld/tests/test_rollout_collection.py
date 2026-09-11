@@ -338,6 +338,45 @@ class RolloutCollectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "temperature"):
             run_rollouts.validate_resume_metadata(existing, expected)
 
+    def test_v2_history_reconciles_fallback_reason_and_executed_action(self):
+        history = {
+            "episode": 0,
+            "gamefile": "game-0",
+            "task_key": "put",
+            "success": False,
+            "steps": [
+                {
+                    "selected_sample": None,
+                    "decision": "",
+                    "action": "look",
+                    "action_taken": "look",
+                    "fallback_reason": "no_sampled_action_was_admissible",
+                    "observation": "Nothing happens.",
+                }
+            ],
+        }
+        episode = {
+            "episode": 0,
+            "gamefile": "game-0",
+            "task_key": "put",
+            "success": False,
+            "num_steps": 1,
+            "advance_trace": [
+                {
+                    "sample": None,
+                    "decision": "",
+                    "action": "look",
+                    "action_taken": "look",
+                    "fallback_reason": "no_sampled_action_was_admissible",
+                    "observation": "Nothing happens.",
+                }
+            ],
+        }
+
+        self.assertTrue(run_rollouts._history_matches_episode(history, episode))
+        history["steps"][0]["fallback_reason"] = "different_reason"
+        self.assertFalse(run_rollouts._history_matches_episode(history, episode))
+
     def test_selection_uses_first_admissible_even_if_parse_is_malformed(self):
         malformed = make_turn(parse_ok=False, action="look")
         well_formed = make_turn(parse_ok=True, action="look")
