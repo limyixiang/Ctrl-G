@@ -83,9 +83,11 @@ the same output directory.
 Each episode also records an `advance_trace` linking every executed action to
 the sampled attempt that produced it.
 
-Only decision-format samples are collected. The metadata reports eligible
-counts and exclusion reasons. The vLLM backend requires exact returned token
-IDs and fails rather than retokenizing generated text.
+Only decision-format samples are collected. The metadata reports completed and
+successful episode counts, rollout success rate, eligible-sample counts, and
+exclusion reasons. The same cumulative success count and rate are printed after
+each completed episode. The vLLM backend requires exact returned token IDs and
+fails rather than retokenizing generated text.
 
 For each environment state, collection samples one thought, decision, and
 action. It resamples the full turn only when the extracted action is empty.

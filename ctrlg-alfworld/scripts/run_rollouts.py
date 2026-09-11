@@ -422,6 +422,10 @@ def recover_resume_state(
     advance_source_counts = Counter()
     for episode_record in episode_records[:committed_episodes]:
         advance_source_counts.update(episode_record.get("advance_sources", []))
+    successful_episodes = sum(
+        episode_record.get("success") is True
+        for episode_record in episode_records[:committed_episodes]
+    )
     per_format = {
         "decision": {
             "samples": sample_count,
@@ -435,6 +439,7 @@ def recover_resume_state(
         eligible_count,
         advance_source_counts,
         per_format,
+        successful_episodes,
     )
 
 
@@ -443,12 +448,15 @@ def update_metadata_progress(
     metadata_path: Path,
     *,
     completed_episodes: int,
+    successful_episodes: int,
     sample_count: int,
     eligible_count: int,
     advance_source_counts: Counter,
     per_format: dict,
 ) -> None:
     metadata["completed_episodes"] = completed_episodes
+    metadata["successful_episodes"] = successful_episodes
+    metadata["success_rate"] = successful_episodes / max(completed_episodes, 1)
     metadata["collection_status"] = (
         "complete" if completed_episodes == metadata["num_episodes"] else "in_progress"
     )
@@ -720,6 +728,7 @@ def main():
                 eligible_count,
                 advance_source_counts,
                 per_format,
+                successful_episodes,
             ) = recover_resume_state(
                 samples_path,
                 episodes_path,
@@ -759,12 +768,14 @@ def main():
             skip(start_episode)
         print(
             f"resuming at episode {start_episode}/{args.num_episodes}; "
-            f"retained {sample_count} committed samples"
+            f"retained {successful_episodes} successful episodes and "
+            f"{sample_count} committed samples"
         )
     else:
         start_episode = 0
         sample_count = 0
         eligible_count = 0
+        successful_episodes = 0
         advance_source_counts = Counter()
         per_format = {
             "decision": {
@@ -780,6 +791,7 @@ def main():
         metadata,
         metadata_path,
         completed_episodes=start_episode,
+        successful_episodes=successful_episodes,
         sample_count=sample_count,
         eligible_count=eligible_count,
         advance_source_counts=advance_source_counts,
@@ -1025,10 +1037,12 @@ def main():
             episodes_file.write(json.dumps(episode_record) + "\n")
             episodes_file.flush()
             os.fsync(episodes_file.fileno())
+            successful_episodes += int(success)
             update_metadata_progress(
                 metadata,
                 metadata_path,
                 completed_episodes=episode_index + 1,
+                successful_episodes=successful_episodes,
                 sample_count=sample_count,
                 eligible_count=eligible_count,
                 advance_source_counts=advance_source_counts,
@@ -1036,6 +1050,8 @@ def main():
             )
             print(
                 f"[{episode_index + 1}/{args.num_episodes}] "
+                f"successes={successful_episodes} "
+                f"success_rate={successful_episodes / (episode_index + 1):.3f} "
                 f"samples={sample_count} eligible={eligible_count} "
                 f"eligible_rate={eligible_count / max(sample_count, 1):.3f}"
             )
@@ -1044,6 +1060,7 @@ def main():
         metadata,
         metadata_path,
         completed_episodes=args.num_episodes,
+        successful_episodes=successful_episodes,
         sample_count=sample_count,
         eligible_count=eligible_count,
         advance_source_counts=advance_source_counts,

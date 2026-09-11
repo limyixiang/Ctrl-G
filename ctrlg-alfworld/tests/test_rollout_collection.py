@@ -2,6 +2,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,6 +100,7 @@ class RolloutCollectionTests(unittest.TestCase):
         episodes = [
             {
                 "episode": 0,
+                "success": True,
                 "num_steps": 1,
                 "advance_sources": ["admissible_raw_model_sample"],
                 "advance_trace": [
@@ -107,6 +109,7 @@ class RolloutCollectionTests(unittest.TestCase):
             },
             {
                 "episode": 1,
+                "success": False,
                 "num_steps": 1,
                 "advance_sources": ["admissible_raw_model_sample"],
                 "advance_trace": [
@@ -156,6 +159,7 @@ class RolloutCollectionTests(unittest.TestCase):
             )
 
             self.assertEqual(state[0:3], (1, 2, 1))
+            self.assertEqual(state[5], 1)
             self.assertEqual(
                 state[3], {"admissible_raw_model_sample": 1}
             )
@@ -353,6 +357,36 @@ class RolloutCollectionTests(unittest.TestCase):
         expected["temperature"] = 1.0
         with self.assertRaisesRegex(ValueError, "temperature"):
             run_rollouts.validate_resume_metadata(existing, expected)
+
+    def test_metadata_progress_reports_episode_successes(self):
+        metadata = {"num_episodes": 4}
+        per_format = {
+            "decision": {
+                "samples": 3,
+                "eligible": 2,
+                "exclusions": Counter({"parse_failure": 1}),
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.json"
+            run_rollouts.update_metadata_progress(
+                metadata,
+                path,
+                completed_episodes=2,
+                successful_episodes=1,
+                sample_count=3,
+                eligible_count=2,
+                advance_source_counts=Counter(
+                    {"admissible_raw_model_sample": 2}
+                ),
+                per_format=per_format,
+            )
+            written = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(written["completed_episodes"], 2)
+        self.assertEqual(written["successful_episodes"], 1)
+        self.assertEqual(written["success_rate"], 0.5)
+        self.assertEqual(written["collection_status"], "in_progress")
 
     def test_v3_history_reconciles_attempt_count_and_executed_action(self):
         history = {
