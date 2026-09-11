@@ -35,9 +35,10 @@ HMM suffix:           </action> + EOS
 
 Original token IDs are retained. Malformed decision/action spans, truncated or
 repaired decisions, truncated actions, and non-token-aligned samples are logged
-but excluded. A truncated native thought is allowed because it lies outside the
-HMM sequence. The state-group train/dev split keeps all samples from one
-`(episode, step)` on the same side of the split.
+but excluded, as are actions outside the current TextWorld admissible set. A
+truncated native thought is allowed because it lies outside the HMM sequence.
+The state-group train/dev split keeps all samples from one `(episode, step)` on
+the same side of the split.
 
 ## 1. Collect decision-format samples
 
@@ -49,7 +50,6 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --backend vllm \
   --model Qwen/Qwen3.5-9B \
   --num_episodes 100 \
-  --samples_per_state 4 \
   --temperature 0.7 \
   --out out/alfworld_hmm_samples
 ```
@@ -71,9 +71,9 @@ RESUME=1 EPISODES=3553 OUTPUT=results/alfworld/actions_hidden/hmm_samples \
 
 `history.jsonl` is an audit artifact and is not used for HMM training. It
 contains one record per completed episode. Each step records every sampled
-model decision/action candidate, the selected candidate, the action actually
-executed, and any deterministic-fallback reason and policy; model thoughts are
-not logged. Resume validates all generation settings, environment
+model decision/action attempt, the selected nonempty attempt, and the action
+actually executed; model thoughts are not logged. Resume validates all
+generation settings, environment
 game ordering, and the config and skills hashes. It reconciles samples,
 episode summaries, and histories to their common durable episode boundary,
 then appends from the next episode. It is supported for the vLLM backend with
@@ -81,24 +81,24 @@ environment domain randomization disabled. Never set
 `RESUME=1` and `OVERWRITE=1` together, and do not run two collectors against
 the same output directory.
 Each episode also records an `advance_trace` linking every executed action to
-the sampled candidate that produced it, or to the deterministic fallback.
+the sampled attempt that produced it.
 
 Only decision-format samples are collected. The metadata reports eligible
 counts and exclusion reasons. The vLLM backend requires exact returned token
 IDs and fails rather than retokenizing generated text.
 
-For each environment state, vLLM collection runs three continuously batched
-generation phases: all candidate thoughts, then all decisions, then all action
-tails. Thought, decision, and action generation have independent limits of
-1024, 64, and 24 tokens. Fixed delimiters guarantee that a long native thought
-cannot consume the decision allowance. A synthetic decision close excludes the
-candidate from distillation; a synthetic thought close does not, because native
-thinking is outside the HMM sequence.
-The environment is stepped only after every candidate has been saved, using the
-first candidate whose extracted action is admissible, regardless of whether its
-non-action formatting is distillation-eligible. Candidate seeds are derived
-from the base seed, episode, step, candidate index, and phase, and are stored
-alongside each sample; completion order cannot change candidate identity.
+For each environment state, collection samples one thought, decision, and
+action. It resamples the full turn only when the extracted action is empty.
+Thought, decision, and action generation have independent limits of 1024, 64,
+and 24 tokens. Fixed delimiters guarantee that a long native thought cannot
+consume the decision allowance. A synthetic decision close excludes the sample
+from distillation; a synthetic thought close does not, because native thinking
+is outside the HMM sequence.
+The first nonempty sampled action is executed and recorded truthfully even when
+it is not admissible, allowing the next prompt to include the environment's
+rejection rather than a synthetic `look`. Inadmissible samples are excluded
+from distillation. vLLM seeds are derived from the base seed, episode, step,
+retry index, fixed singleton-candidate index, and phase.
 
 ## 2. Build one HMM dataset
 

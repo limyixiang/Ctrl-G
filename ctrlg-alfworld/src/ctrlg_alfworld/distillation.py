@@ -156,16 +156,16 @@ def load_eligible_records(
                         f"{path}:{line_number} action does not match the "
                         f"advance trace for selected sample {key}"
                     )
-                if record.get("action_was_admissible") is not True:
-                    raise ValueError(
-                        f"{path}:{line_number} selected sample {key} is not "
-                        "admissible"
-                    )
             if record.get("distill_eligible"):
                 if record.get("parse_ok") is not True:
                     raise ValueError(
                         f"{path}:{line_number} distillation-eligible sample "
                         "is not well formed"
+                    )
+                if record.get("action_was_admissible") is not True:
+                    raise ValueError(
+                        f"{path}:{line_number} distillation-eligible sample "
+                        "is not admissible"
                     )
                 validate_record(record, source=f"{path}:{line_number}")
                 records.append(record)

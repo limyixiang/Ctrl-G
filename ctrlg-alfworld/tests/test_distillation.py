@@ -125,6 +125,7 @@ class DistillationDataTests(unittest.TestCase):
             ),
         ]
         samples[0]["parse_ok"] = False
+        samples[0]["action_was_admissible"] = False
         episodes = [
             {
                 "episode": 0,

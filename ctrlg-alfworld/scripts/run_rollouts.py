@@ -1,8 +1,8 @@
 """Collect prompt-conditioned raw model samples for ALFWorld HMM distillation.
 
 Every sample uses the persistent-decision prompt format that is evaluated in
-both active conditions. The environment may be advanced with one admissible
-model sample, but only raw generations are written as HMM training examples.
+both active conditions. One nonempty model action defines the trajectory at
+each state, but only admissible raw generations are HMM training examples.
 """
 
 import argparse
@@ -47,7 +47,7 @@ RESUME_COMPATIBILITY_FIELDS = (
     "tokenizer",
     "split",
     "num_episodes",
-    "samples_per_state",
+    "sampling_policy",
     "prompt_format",
     "show_admissible_actions",
     "max_steps",
@@ -273,6 +273,7 @@ def _history_matches_episode(history_record: dict, episode_record: dict) -> bool
         == trace_step.get("action_taken", trace_step.get("action"))
         and history_step.get("decision", "") == trace_step.get("decision", "")
         and history_step.get("selected_sample") == trace_step.get("sample")
+        and history_step.get("sample_attempts") == trace_step.get("sample_attempts")
         and history_step.get("fallback_reason")
         == trace_step.get("fallback_reason")
         and history_step.get("observation") == trace_step.get("observation")
@@ -285,7 +286,6 @@ def recover_resume_state(
     episodes_path: Path,
     history_path: Path | None = None,
     *,
-    samples_per_state: int,
     num_episodes: int,
 ) -> tuple[int, int, int, Counter, dict]:
     """Repair an interrupted suffix and reconstruct counters at an episode boundary."""
@@ -319,8 +319,33 @@ def recover_resume_state(
             episode_exclusions = Counter()
             episode_complete = True
             incomplete_artifact = "sample"
+            episode_samples = 0
+            advance_trace = episode_record.get("advance_trace")
+            if (
+                not isinstance(advance_trace, list)
+                or len(advance_trace) != episode_record["num_steps"]
+            ):
+                episode_complete = False
+                incomplete_artifact = "advance trace"
             for step_index in range(episode_record["num_steps"]):
-                for sample_index in range(samples_per_state):
+                if not episode_complete:
+                    break
+                trace_step = advance_trace[step_index]
+                sample_attempts = (
+                    trace_step.get("sample_attempts")
+                    if isinstance(trace_step, dict)
+                    else None
+                )
+                if not isinstance(sample_attempts, int) or sample_attempts < 1:
+                    episode_complete = False
+                    incomplete_artifact = "advance trace"
+                    break
+                if trace_step.get("sample") != sample_attempts - 1:
+                    episode_complete = False
+                    incomplete_artifact = "advance trace"
+                    break
+                episode_samples += sample_attempts
+                for sample_index in range(sample_attempts):
                     line = samples_file.readline()
                     if not line or not line.endswith(b"\n"):
                         episode_complete = False
@@ -344,6 +369,16 @@ def recover_resume_state(
                         record.get("sample"),
                     )
                     if actual_position != expected_position:
+                        episode_complete = False
+                        break
+                    action = record.get("action")
+                    if (
+                        sample_index < sample_attempts - 1
+                        and (not isinstance(action, str) or action)
+                    ) or (
+                        sample_index == sample_attempts - 1
+                        and (not isinstance(action, str) or not action)
+                    ):
                         episode_complete = False
                         break
                     episode_eligible += int(bool(record.get("distill_eligible")))
@@ -374,7 +409,6 @@ def recover_resume_state(
 
             committed_episodes += 1
             committed_sample_offset = samples_file.tell()
-            episode_samples = episode_record["num_steps"] * samples_per_state
             sample_count += episode_samples
             eligible_count += episode_eligible
             exclusions.update(episode_exclusions)
@@ -468,14 +502,14 @@ def prepare_output_paths(
     return paths
 
 
-def select_advance_turn(sampled_turns, admissible_actions):
-    """Return the first sample whose extracted action is admissible."""
+def select_advance_turn(sampled_turns):
+    """Return the first sample whose extracted action is non-empty."""
 
     return next(
         (
             (sample_index, turn)
             for sample_index, turn in sampled_turns
-            if turn.parsed.action in admissible_actions
+            if turn.parsed.action
         ),
         None,
     )
@@ -484,6 +518,7 @@ def select_advance_turn(sampled_turns, admissible_actions):
 def distill_exclusion_reasons(
     turn,
     hmm_sequence,
+    admissible_actions,
     *,
     max_hmm_prefix_tokens,
     max_hmm_sequence_tokens,
@@ -505,6 +540,8 @@ def distill_exclusion_reasons(
         reasons.append("synthetic_decision_close")
     if turn.decision_truncated:
         reasons.append("decision_truncated")
+    if turn.parsed.action not in admissible_actions:
+        reasons.append("inadmissible_action")
     if turn.tail_truncated:
         reasons.append("tail_truncated")
     if not turn.tail_span_exact:
@@ -541,7 +578,6 @@ def main():
         choices=["train", "eval_in_distribution", "eval_out_of_distribution"],
     )
     parser.add_argument("--num_episodes", type=int, default=100)
-    parser.add_argument("--samples_per_state", type=int, default=4)
     parser.add_argument("--max_steps", type=int, default=50)
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
     parser.add_argument("--max_decision_tokens", type=int, default=64)
@@ -643,7 +679,7 @@ def main():
         "tokenizer": args.tokenizer or args.model,
         "split": args.split,
         "num_episodes": args.num_episodes,
-        "samples_per_state": args.samples_per_state,
+        "sampling_policy": "single_trajectory_resample_empty_action",
         "prompt_format": "decision_with_persistent_history",
         "show_admissible_actions": args.show_admissible_actions,
         "max_steps": args.max_steps,
@@ -654,19 +690,15 @@ def main():
         "max_hmm_prefix_tokens": args.max_hmm_prefix_tokens,
         "max_hmm_sequence_tokens": args.max_hmm_sequence_tokens,
         "seed": args.seed,
-        "generation_schedule": (
-            "three_phase_vllm_continuous_batch"
-            if args.backend == "vllm"
-            else "sequential_thought_decision_action"
-        ),
+        "generation_schedule": "single_thought_decision_action_with_empty_retry",
         "candidate_seed_scheme": (
-            "sha256(base_seed,episode,step,candidate,phase)"
+            "sha256(base_seed,episode,step,retry,zero,phase)"
             if args.backend == "vllm"
             else "torch_rng_stream"
         ),
         "environment_seed_scheme": "sorted_gamefiles_then_textworld_seed",
         "game_files_sha256": json_sha256(env_factory.game_files),
-        "history_format": "episode_jsonl_v2_candidate_audit",
+        "history_format": "episode_jsonl_v3_single_trajectory_empty_retry",
         "device": args.device if args.backend == "hf" else "vllm_server",
         "dtype": args.dtype if args.backend == "hf" else "vllm_server",
         "config": str(Path(args.config).resolve()),
@@ -692,7 +724,6 @@ def main():
                 samples_path,
                 episodes_path,
                 history_path,
-                samples_per_state=args.samples_per_state,
                 num_episodes=args.num_episodes,
             )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -784,142 +815,136 @@ def main():
 
                 sampled_turns = []
                 candidate_audit = []
-                for use_decision in (True,):
-                    user_prompt = build_user_prompt(
-                        skill_content=skillset.raw_markdown,
-                        task_description=task_description,
-                        current_observation=observation,
-                        obs_history=history,
-                        use_decision=use_decision,
-                        admissible_actions=admissible_actions,
-                        show_admissible_actions=args.show_admissible_actions,
-                    )
-                    prompt_text = render_prompt(
-                        backend.tokenizer, SYSTEM_INSTRUCTION, user_prompt
-                    )
-                    prompt_token_ids = backend.tokenizer.encode(
-                        prompt_text, add_special_tokens=False
-                    )
+                use_decision = True
+                user_prompt = build_user_prompt(
+                    skill_content=skillset.raw_markdown,
+                    task_description=task_description,
+                    current_observation=observation,
+                    obs_history=history,
+                    use_decision=use_decision,
+                    admissible_actions=admissible_actions,
+                    show_admissible_actions=args.show_admissible_actions,
+                )
+                prompt_text = render_prompt(
+                    backend.tokenizer, SYSTEM_INSTRUCTION, user_prompt
+                )
+                prompt_token_ids = backend.tokenizer.encode(
+                    prompt_text, add_special_tokens=False
+                )
 
-                    turns = backend.generate_turns_unconstrained(
+                selected = None
+                sample_index = 0
+                while selected is None:
+                    turn = backend.generate_turns_unconstrained(
                         prompt_text,
-                        count=args.samples_per_state,
+                        count=1,
                         use_decision=use_decision,
                         greedy=False,
-                        seed_context=(episode_index, step_index),
+                        seed_context=(episode_index, step_index, sample_index),
+                    )[0]
+                    sampled_turns.append((sample_index, turn))
+                    hmm_sequence = (
+                        list(turn.hmm_prefix_token_ids)
+                        + list(turn.tail_token_ids)
+                        + [backend.tokenizer.eos_token_id]
                     )
-                    for sample_index, turn in enumerate(turns):
-                        sampled_turns.append((sample_index, turn))
-                        hmm_sequence = (
-                            list(turn.hmm_prefix_token_ids)
-                            + list(turn.tail_token_ids)
-                            + [backend.tokenizer.eos_token_id]
-                        )
-                        exclusion_reasons = distill_exclusion_reasons(
-                            turn,
-                            hmm_sequence,
-                            max_hmm_prefix_tokens=args.max_hmm_prefix_tokens,
-                            max_hmm_sequence_tokens=args.max_hmm_sequence_tokens,
-                        )
-                        distill_eligible = not exclusion_reasons
-                        candidate_audit.append(
-                            {
-                                "sample": sample_index,
-                                "model_decision": turn.parsed.decision,
-                                "model_action": turn.parsed.action,
-                                "action_was_admissible": (
-                                    turn.parsed.action in admissible_actions
-                                ),
-                                "parse_ok": turn.parsed.parse_ok,
-                                "parse_errors": list(turn.parsed.errors),
-                                "distill_eligible": distill_eligible,
-                                "distill_exclusion_reasons": exclusion_reasons,
-                            }
-                        )
-                        record = {
-                            "episode": episode_index,
-                            "step": step_index,
+                    exclusion_reasons = distill_exclusion_reasons(
+                        turn,
+                        hmm_sequence,
+                        admissible_actions,
+                        max_hmm_prefix_tokens=args.max_hmm_prefix_tokens,
+                        max_hmm_sequence_tokens=args.max_hmm_sequence_tokens,
+                    )
+                    distill_eligible = not exclusion_reasons
+                    action_was_admissible = (
+                        turn.parsed.action in admissible_actions
+                    )
+                    candidate_audit.append(
+                        {
                             "sample": sample_index,
-                            "gamefile": gamefile,
-                            "task_key": task_key,
-                            "use_decision": use_decision,
-                            "show_admissible_actions": args.show_admissible_actions,
-                            "temperature": args.temperature,
-                            "seed": args.seed,
-                            "head_seed": turn.head_seed,
-                            "decision_seed": turn.decision_seed,
-                            "tail_seed": turn.tail_seed,
-                            "prompt_text": prompt_text,
-                            "prompt_token_ids": prompt_token_ids,
-                            "raw_head": turn.parsed.raw_head,
-                            "raw_tail": turn.parsed.raw_tail,
-                            "head_token_ids": list(turn.head_token_ids),
-                            "thought_token_ids": list(turn.thought_token_ids),
-                            "decision_token_ids": list(turn.decision_token_ids),
-                            "hmm_prefix_text": turn.parsed.hmm_prefix_text,
-                            "hmm_prefix_token_ids": list(
-                                turn.hmm_prefix_token_ids
-                            ),
-                            "action": turn.parsed.action,
-                            "action_token_ids": list(turn.action_token_ids),
-                            "tail_token_ids": list(turn.tail_token_ids),
-                            "hmm_sequence_token_ids": hmm_sequence,
+                            "model_decision": turn.parsed.decision,
+                            "model_action": turn.parsed.action,
+                            "action_was_admissible": action_was_admissible,
                             "parse_ok": turn.parsed.parse_ok,
                             "parse_errors": list(turn.parsed.errors),
-                            "used_head_repair": turn.used_head_repair,
-                            "used_thought_repair": turn.used_thought_repair,
-                            "used_decision_repair": turn.used_decision_repair,
-                            "head_stop_found": turn.head_stop_found,
-                            "head_truncated": turn.head_truncated,
-                            "thought_stop_found": turn.thought_stop_found,
-                            "thought_truncated": turn.thought_truncated,
-                            "decision_stop_found": turn.decision_stop_found,
-                            "decision_truncated": turn.decision_truncated,
-                            "tail_stop_found": turn.tail_stop_found,
-                            "tail_truncated": turn.tail_truncated,
-                            "tail_span_exact": turn.tail_span_exact,
                             "distill_eligible": distill_eligible,
                             "distill_exclusion_reasons": exclusion_reasons,
-                            "action_was_admissible": (
-                                turn.parsed.action in admissible_actions
-                            ),
-                            "admissible_gt": admissible_actions,
-                            "head_latency_seconds": turn.head_latency_seconds,
-                            "thought_latency_seconds": turn.thought_latency_seconds,
-                            "decision_latency_seconds": turn.decision_latency_seconds,
-                            "action_latency_seconds": turn.action_latency_seconds,
                         }
-                        samples_file.write(json.dumps(record) + "\n")
-                        sample_count += 1
-                        eligible_count += int(distill_eligible)
-                        format_key = "decision"
-                        per_format[format_key]["samples"] += 1
-                        per_format[format_key]["eligible"] += int(distill_eligible)
-                        per_format[format_key]["exclusions"].update(exclusion_reasons)
-
-                selected = select_advance_turn(sampled_turns, admissible_actions)
-                if selected is None:
-                    advance_sample = None
-                    advance_action = (
-                        "look" if "look" in admissible_actions else admissible_actions[0]
                     )
-                    advance_source = "deterministic_admissible_fallback"
-                    advance_thought = ""
-                    advance_decision = ""
-                    selected_model_decision = None
-                    selected_model_action = None
-                    fallback_reason = "no_sampled_action_was_admissible"
-                    fallback_policy = "look_if_admissible_else_first_admissible"
-                else:
-                    advance_sample, selected_turn = selected
-                    advance_action = selected_turn.parsed.action
-                    advance_source = "admissible_raw_model_sample"
-                    advance_thought = selected_turn.parsed.thought
-                    advance_decision = selected_turn.parsed.decision
-                    selected_model_decision = selected_turn.parsed.decision
-                    selected_model_action = selected_turn.parsed.action
-                    fallback_reason = None
-                    fallback_policy = None
+                    record = {
+                        "episode": episode_index,
+                        "step": step_index,
+                        "sample": sample_index,
+                        "gamefile": gamefile,
+                        "task_key": task_key,
+                        "use_decision": use_decision,
+                        "show_admissible_actions": args.show_admissible_actions,
+                        "temperature": args.temperature,
+                        "seed": args.seed,
+                        "head_seed": turn.head_seed,
+                        "decision_seed": turn.decision_seed,
+                        "tail_seed": turn.tail_seed,
+                        "prompt_text": prompt_text,
+                        "prompt_token_ids": prompt_token_ids,
+                        "raw_head": turn.parsed.raw_head,
+                        "raw_tail": turn.parsed.raw_tail,
+                        "head_token_ids": list(turn.head_token_ids),
+                        "thought_token_ids": list(turn.thought_token_ids),
+                        "decision_token_ids": list(turn.decision_token_ids),
+                        "hmm_prefix_text": turn.parsed.hmm_prefix_text,
+                        "hmm_prefix_token_ids": list(turn.hmm_prefix_token_ids),
+                        "action": turn.parsed.action,
+                        "action_token_ids": list(turn.action_token_ids),
+                        "tail_token_ids": list(turn.tail_token_ids),
+                        "hmm_sequence_token_ids": hmm_sequence,
+                        "parse_ok": turn.parsed.parse_ok,
+                        "parse_errors": list(turn.parsed.errors),
+                        "used_head_repair": turn.used_head_repair,
+                        "used_thought_repair": turn.used_thought_repair,
+                        "used_decision_repair": turn.used_decision_repair,
+                        "head_stop_found": turn.head_stop_found,
+                        "head_truncated": turn.head_truncated,
+                        "thought_stop_found": turn.thought_stop_found,
+                        "thought_truncated": turn.thought_truncated,
+                        "decision_stop_found": turn.decision_stop_found,
+                        "decision_truncated": turn.decision_truncated,
+                        "tail_stop_found": turn.tail_stop_found,
+                        "tail_truncated": turn.tail_truncated,
+                        "tail_span_exact": turn.tail_span_exact,
+                        "distill_eligible": distill_eligible,
+                        "distill_exclusion_reasons": exclusion_reasons,
+                        "action_was_admissible": action_was_admissible,
+                        "admissible_gt": admissible_actions,
+                        "head_latency_seconds": turn.head_latency_seconds,
+                        "thought_latency_seconds": turn.thought_latency_seconds,
+                        "decision_latency_seconds": turn.decision_latency_seconds,
+                        "action_latency_seconds": turn.action_latency_seconds,
+                    }
+                    samples_file.write(json.dumps(record) + "\n")
+                    sample_count += 1
+                    eligible_count += int(distill_eligible)
+                    format_key = "decision"
+                    per_format[format_key]["samples"] += 1
+                    per_format[format_key]["eligible"] += int(distill_eligible)
+                    per_format[format_key]["exclusions"].update(exclusion_reasons)
+
+                    selected = select_advance_turn(sampled_turns)
+                    sample_index += 1
+
+                advance_sample, selected_turn = selected
+                advance_action = selected_turn.parsed.action
+                action_was_admissible = advance_action in admissible_actions
+                advance_source = (
+                    "admissible_raw_model_sample"
+                    if action_was_admissible
+                    else "inadmissible_raw_model_sample"
+                )
+                advance_thought = selected_turn.parsed.thought
+                advance_decision = selected_turn.parsed.decision
+                selected_model_decision = selected_turn.parsed.decision
+                selected_model_action = selected_turn.parsed.action
+                fallback_reason = None
+                fallback_policy = None
 
                 next_observation, _, done, info = env.step([advance_action])
                 observation = process_ob(next_observation[0])
@@ -936,10 +961,12 @@ def main():
                         "step": step_index,
                         "candidates": candidate_audit,
                         "selected_sample": advance_sample,
+                        "sample_attempts": sample_index,
+                        "empty_action_retries": advance_sample,
                         "selected_model_decision": selected_model_decision,
                         "selected_model_action": selected_model_action,
                         "action_taken": advance_action,
-                        "fallback_used": selected is None,
+                        "fallback_used": False,
                         "fallback_reason": fallback_reason,
                         "fallback_policy": fallback_policy,
                         # Retain the original fields for simple readers and
@@ -955,6 +982,8 @@ def main():
                     {
                         "step": step_index,
                         "sample": advance_sample,
+                        "sample_attempts": sample_index,
+                        "empty_action_retries": advance_sample,
                         "source": advance_source,
                         "selected_model_decision": selected_model_decision,
                         "selected_model_action": selected_model_action,

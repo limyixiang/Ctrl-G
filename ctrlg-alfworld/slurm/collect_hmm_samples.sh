@@ -13,7 +13,7 @@
 #SBATCH --mail-user=e1121685@u.nus.edu
 
 # to run a pilot test:
-# MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=2 SAMPLES_PER_STATE=1 OUTPUT=results/alfworld/pilot_actions_hidden sbatch -t 3:00:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=2 OUTPUT=results/alfworld/pilot_actions_hidden sbatch -t 3:00:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 # actual runs
 # RESUME=1 SHOW_ADMISSIBLE_ACTIONS=0 OUTPUT=results/alfworld/actions_hidden/hmm_samples_h100_96 sbatch --job-name=alfworld-hidden ctrlg-alfworld/slurm/collect_hmm_samples.sh
@@ -34,7 +34,6 @@ export TOKENIZERS_PARALLELISM=false
 MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 SERVED_NAME=Qwen/Qwen3.5-9B
 EPISODES=${EPISODES:-3553}
-SAMPLES_PER_STATE=${SAMPLES_PER_STATE:-4}
 TEMPERATURE=${TEMPERATURE:-0.7}
 if [[ "${RESUME:-0}" == "1" && -z "${OUTPUT:-}" ]]; then
   echo "RESUME=1 requires OUTPUT to name the existing collection directory" >&2
@@ -94,7 +93,6 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --tokenizer "$MODEL" \
   --base_url "http://127.0.0.1:$PORT/v1" \
   --num_episodes "$EPISODES" \
-  --samples_per_state "$SAMPLES_PER_STATE" \
   --temperature "$TEMPERATURE" \
   --max_hmm_sequence_tokens 256 \
   --max_thought_tokens 1024 \

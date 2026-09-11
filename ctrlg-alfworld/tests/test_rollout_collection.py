@@ -101,11 +101,17 @@ class RolloutCollectionTests(unittest.TestCase):
                 "episode": 0,
                 "num_steps": 1,
                 "advance_sources": ["admissible_raw_model_sample"],
+                "advance_trace": [
+                    {"step": 0, "sample": 1, "sample_attempts": 2}
+                ],
             },
             {
                 "episode": 1,
                 "num_steps": 1,
-                "advance_sources": ["deterministic_admissible_fallback"],
+                "advance_sources": ["admissible_raw_model_sample"],
+                "advance_trace": [
+                    {"step": 0, "sample": 1, "sample_attempts": 2}
+                ],
             },
         ]
         committed_samples = [
@@ -113,8 +119,9 @@ class RolloutCollectionTests(unittest.TestCase):
                 "episode": 0,
                 "step": 0,
                 "sample": sample,
-                "distill_eligible": sample == 0,
-                "distill_exclusion_reasons": [] if sample == 0 else ["parse_failure"],
+                "action": "" if sample == 0 else "look",
+                "distill_eligible": sample == 1,
+                "distill_exclusion_reasons": ["parse_failure"] if sample == 0 else [],
             }
             for sample in range(2)
         ]
@@ -122,6 +129,7 @@ class RolloutCollectionTests(unittest.TestCase):
             "episode": 1,
             "step": 0,
             "sample": 0,
+            "action": "",
             "distill_eligible": True,
             "distill_exclusion_reasons": [],
         }
@@ -144,7 +152,6 @@ class RolloutCollectionTests(unittest.TestCase):
             state = run_rollouts.recover_resume_state(
                 samples_path,
                 episodes_path,
-                samples_per_state=2,
                 num_episodes=2,
             )
 
@@ -164,7 +171,14 @@ class RolloutCollectionTests(unittest.TestCase):
 
     def test_resume_rejects_interior_sample_corruption(self):
         episodes = [
-            {"episode": episode, "num_steps": 1, "advance_sources": []}
+            {
+                "episode": episode,
+                "num_steps": 1,
+                "advance_sources": [],
+                "advance_trace": [
+                    {"step": 0, "sample": 0, "sample_attempts": 1}
+                ],
+            }
             for episode in range(2)
         ]
         samples = [
@@ -192,7 +206,6 @@ class RolloutCollectionTests(unittest.TestCase):
                 run_rollouts.recover_resume_state(
                     samples_path,
                     episodes_path,
-                    samples_per_state=1,
                     num_episodes=2,
                 )
 
@@ -214,6 +227,8 @@ class RolloutCollectionTests(unittest.TestCase):
                     "advance_trace": [
                         {
                             "step": 0,
+                            "sample": 0,
+                            "sample_attempts": 1,
                             "action": action,
                             "decision": "continue",
                             "observation": observation,
@@ -229,6 +244,8 @@ class RolloutCollectionTests(unittest.TestCase):
                     "success": False,
                     "steps": [
                         {
+                            "selected_sample": 0,
+                            "sample_attempts": 1,
                             "decision": "continue",
                             "action": action,
                             "observation": observation,
@@ -241,6 +258,7 @@ class RolloutCollectionTests(unittest.TestCase):
                     "episode": episode,
                     "step": 0,
                     "sample": 0,
+                    "action": action,
                     "distill_eligible": True,
                     "distill_exclusion_reasons": [],
                 }
@@ -268,7 +286,6 @@ class RolloutCollectionTests(unittest.TestCase):
                 samples_path,
                 episodes_path,
                 history_path,
-                samples_per_state=1,
                 num_episodes=2,
             )
 
@@ -321,7 +338,6 @@ class RolloutCollectionTests(unittest.TestCase):
                 samples_path,
                 episodes_path,
                 history_path,
-                samples_per_state=1,
                 num_episodes=2,
             )
 
@@ -338,7 +354,7 @@ class RolloutCollectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "temperature"):
             run_rollouts.validate_resume_metadata(existing, expected)
 
-    def test_v2_history_reconciles_fallback_reason_and_executed_action(self):
+    def test_v3_history_reconciles_attempt_count_and_executed_action(self):
         history = {
             "episode": 0,
             "gamefile": "game-0",
@@ -346,11 +362,12 @@ class RolloutCollectionTests(unittest.TestCase):
             "success": False,
             "steps": [
                 {
-                    "selected_sample": None,
-                    "decision": "",
-                    "action": "look",
-                    "action_taken": "look",
-                    "fallback_reason": "no_sampled_action_was_admissible",
+                    "selected_sample": 1,
+                    "sample_attempts": 2,
+                    "decision": "try sink",
+                    "action": "go to sink 9",
+                    "action_taken": "go to sink 9",
+                    "fallback_reason": None,
                     "observation": "Nothing happens.",
                 }
             ],
@@ -363,63 +380,58 @@ class RolloutCollectionTests(unittest.TestCase):
             "num_steps": 1,
             "advance_trace": [
                 {
-                    "sample": None,
-                    "decision": "",
-                    "action": "look",
-                    "action_taken": "look",
-                    "fallback_reason": "no_sampled_action_was_admissible",
+                    "sample": 1,
+                    "sample_attempts": 2,
+                    "decision": "try sink",
+                    "action": "go to sink 9",
+                    "action_taken": "go to sink 9",
+                    "fallback_reason": None,
                     "observation": "Nothing happens.",
                 }
             ],
         }
 
         self.assertTrue(run_rollouts._history_matches_episode(history, episode))
-        history["steps"][0]["fallback_reason"] = "different_reason"
+        history["steps"][0]["sample_attempts"] = 3
         self.assertFalse(run_rollouts._history_matches_episode(history, episode))
 
-    def test_selection_uses_first_admissible_even_if_parse_is_malformed(self):
+    def test_selection_uses_first_nonempty_even_if_parse_is_malformed(self):
         malformed = make_turn(parse_ok=False, action="look")
         well_formed = make_turn(parse_ok=True, action="look")
         self.assertEqual(
-            run_rollouts.select_advance_turn(
-                [(0, malformed), (1, well_formed)], ["look"]
-            ),
+            run_rollouts.select_advance_turn([(0, malformed), (1, well_formed)]),
             (0, malformed),
         )
 
-    def test_selection_uses_first_admissible_even_if_head_was_repaired(self):
+    def test_selection_uses_first_nonempty_even_if_head_was_repaired(self):
         repaired = make_turn(
             parse_ok=True, action="look", used_head_repair=True
         )
         natural = make_turn(parse_ok=True, action="look")
         self.assertEqual(
-            run_rollouts.select_advance_turn(
-                [(0, repaired), (1, natural)], ["look"]
-            ),
+            run_rollouts.select_advance_turn([(0, repaired), (1, natural)]),
             (0, repaired),
         )
 
-    def test_selection_skips_inadmissible_samples_and_uses_later_action(self):
-        admissible = make_turn(parse_ok=False, action="look")
+    def test_selection_skips_empty_sample_and_uses_later_action(self):
+        nonempty = make_turn(parse_ok=False, action="look")
         self.assertEqual(
             run_rollouts.select_advance_turn(
                 [
-                    (0, make_turn(parse_ok=True, action="open fridge 1")),
-                    (1, admissible),
-                ],
-                ["look"],
+                    (0, make_turn(parse_ok=False, action="")),
+                    (1, nonempty),
+                ]
             ),
-            (1, admissible),
+            (1, nonempty),
         )
 
-    def test_selection_returns_none_without_an_admissible_action(self):
+    def test_selection_returns_none_when_all_actions_are_empty(self):
         self.assertIsNone(
             run_rollouts.select_advance_turn(
                 [
-                    (0, make_turn(parse_ok=False, action="inventory")),
-                    (1, make_turn(parse_ok=True, action="open fridge 1")),
-                ],
-                ["look"],
+                    (0, make_turn(parse_ok=False, action="")),
+                    (1, make_turn(parse_ok=False, action="")),
+                ]
             )
         )
 
@@ -435,6 +447,7 @@ class RolloutCollectionTests(unittest.TestCase):
             run_rollouts.distill_exclusion_reasons(
                 turn,
                 [10, 11, 20, 0],
+                ["look"],
                 max_hmm_prefix_tokens=None,
                 max_hmm_sequence_tokens=128,
             ),
@@ -453,10 +466,24 @@ class RolloutCollectionTests(unittest.TestCase):
             run_rollouts.distill_exclusion_reasons(
                 turn,
                 [10, 11, 20, 0],
+                ["look"],
                 max_hmm_prefix_tokens=None,
                 max_hmm_sequence_tokens=128,
             ),
             ["synthetic_decision_close", "decision_truncated"],
+        )
+
+    def test_distillation_excludes_inadmissible_action(self):
+        turn = make_turn(parse_ok=True, action="go to nowhere")
+        self.assertEqual(
+            run_rollouts.distill_exclusion_reasons(
+                turn,
+                [10, 11, 20, 0],
+                ["look"],
+                max_hmm_prefix_tokens=None,
+                max_hmm_sequence_tokens=128,
+            ),
+            ["inadmissible_action"],
         )
 
 

@@ -18,7 +18,7 @@ experiment:
 
 distillation:
   prompt_format: "decision block with persistent decision-history replay"
-  samples_per_state: 4
+  sampling_policy: "single trajectory; resample only empty actions"
   split_policy: "state-group train/dev split"
   sequence: "generated post-think text through <action>, action body, </action>, EOS"
   excludes:
