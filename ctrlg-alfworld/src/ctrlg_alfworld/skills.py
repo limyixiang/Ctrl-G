@@ -58,6 +58,7 @@ class SkillSet:
                 )
             )
         if not skills:
-            raise ValueError(f"No ```action blocks found in {path}")
+            skills = []
+            # raise ValueError(f"No ```action blocks found in {path}")
         return cls(skills=skills, raw_markdown=raw)
 

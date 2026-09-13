@@ -53,9 +53,9 @@ def build_user_prompt(
     parts.append(skill)
 
     action_history = []
-    for h in obs_history:
-        action_history.append(f"ACTION: {h.action.strip()}")
-        action_history.append(f"OBSERVATION: {h.observation.strip()}")
+    for idx, h in enumerate(obs_history):
+        action_history.append(f"Step {idx+1}: {h.action.strip()}")
+        action_history.append(f"\t> {h.observation.strip()}")
     action_history = "\n".join(action_history)
 
     if show_admissible_actions:
@@ -70,18 +70,19 @@ def build_user_prompt(
     else:
         admissible_actions_section = ""
 
-    if use_decision:
-        decision_instruction = (
-            f"After thinking, emit one short decision in {DECISION_OPEN} "
-            f"{DECISION_CLOSE}, then emit exactly one action in "
-            f"{ACTION_OPEN} {ACTION_CLOSE}."
-        )
-    else:
-        decision_instruction = (
-            f"After thinking, emit exactly one action in {ACTION_OPEN} "
-            f"{ACTION_CLOSE}, with no text between the thinking span and "
-            f"{ACTION_OPEN}."
-        )
+    # if use_decision:
+    #     decision_instruction = (
+    #         f"After thinking, emit one short decision in {DECISION_OPEN} "
+    #         f"{DECISION_CLOSE}, then emit exactly one action in "
+    #         f"{ACTION_OPEN} {ACTION_CLOSE}."
+    #     )
+    # else:
+    #     decision_instruction = (
+    #         f"After thinking, emit exactly one action in {ACTION_OPEN} "
+    #         f"{ACTION_CLOSE}, with no text between the thinking span and "
+    #         f"{ACTION_OPEN}."
+    #     )
+    decision_instruction = ""
 
     if len(obs_history) > 0:
         obs_template = _load_md(TEMPLATED_OBS_WITH_HIST_PATH)

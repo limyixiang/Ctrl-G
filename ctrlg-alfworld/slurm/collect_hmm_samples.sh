@@ -13,7 +13,7 @@
 #SBATCH --mail-user=e1121685@u.nus.edu
 
 # to run a pilot test:
-# MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=2 OUTPUT=results/alfworld/pilot_actions_hidden sbatch -t 3:00:00 -p gpu ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=2 OUTPUT=results/alfworld/pilot_actions_hidden sbatch -t 3:00:00 -p gpu --gres=gpu:h100-47:1 ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 # actual runs
 # RESUME=1 SHOW_ADMISSIBLE_ACTIONS=0 OUTPUT=results/alfworld/actions_hidden/hmm_samples_h100_96 sbatch --job-name=alfworld-hidden ctrlg-alfworld/slurm/collect_hmm_samples.sh
@@ -96,7 +96,9 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --temperature "$TEMPERATURE" \
   --max_hmm_sequence_tokens 256 \
   --max_thought_tokens 1024 \
-  --max_decision_tokens 64 \
+  --max_decision_tokens 128 \
   "${PROMPT_ARGS[@]}" \
   "${OUTPUT_ARGS[@]}" \
   --out "$OUTPUT"
+
+jq '.' results/alfworld/pilot_actions_hidden/history.jsonl > results/alfworld/pilot_actions_hidden/history.json
