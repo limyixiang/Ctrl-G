@@ -121,6 +121,7 @@ def run_episode(
         user_prompt = build_user_prompt(
             skill_content=skillset.raw_markdown,
             task_description=task_description,
+            initial_observation=initial_obs,
             current_observation=obs,
             obs_history=steps,
             use_decision=condition.use_decision,

@@ -8,6 +8,7 @@ class PromptTests(unittest.TestCase):
         return build_user_prompt(
             skill_content="Keep searching systematically.",
             task_description="put a mug on shelf 1",
+            initial_observation="You are in a kitchen.",
             current_observation="You see a countertop 1.",
             obs_history=history or [],
             use_decision=use_decision,
@@ -18,6 +19,22 @@ class PromptTests(unittest.TestCase):
     def test_initial_prompt_contains_task(self):
         prompt = self.make_prompt(use_decision=False)
         self.assertIn("put a mug on shelf 1", prompt)
+
+    def test_history_starts_with_initial_observation(self):
+        history = [
+            Step(
+                thought="private native reasoning",
+                action="look",
+                observation="You see a shelf 1.",
+            )
+        ]
+        prompt = self.make_prompt(use_decision=False, history=history)
+        initial_observation = (
+            "Your initial observation was: You are in a kitchen."
+        )
+        first_action = "Step 1: look"
+        self.assertIn(initial_observation, prompt)
+        self.assertLess(prompt.index(initial_observation), prompt.index(first_action))
 
     def test_core_prompt_does_not_leak_admissible_list(self):
         prompt = self.make_prompt(use_decision=False)

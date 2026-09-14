@@ -831,6 +831,7 @@ def main():
                 user_prompt = build_user_prompt(
                     skill_content=skillset.raw_markdown,
                     task_description=task_description,
+                    initial_observation=initial_observation,
                     current_observation=observation,
                     obs_history=history,
                     use_decision=use_decision,

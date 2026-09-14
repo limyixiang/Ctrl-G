@@ -31,6 +31,7 @@ class Step:
 def build_user_prompt(
     skill_content: str,
     task_description: str,
+    initial_observation: str,
     current_observation: str,
     obs_history: list[Step],
     *,
@@ -47,6 +48,10 @@ def build_user_prompt(
 
     Native model thinking is enabled by :func:`render_prompt`, so this prompt
     must not request a second, manually generated ``<think>`` block.
+
+    ``initial_observation`` is kept separate from ``obs_history`` because each
+    :class:`Step` stores the observation produced *after* its action. Including
+    it explicitly preserves the complete trajectory on subsequent turns.
     """
     parts = []
     skill = SKILL_TEMPLATE.format(skill_content=skill_content)
@@ -90,6 +95,7 @@ def build_user_prompt(
         obs_template = _load_md(TEMPLATED_OBS_NO_HIST_PATH)
     obs_template = obs_template.format(
         task_description=task_description,
+        initial_observation=initial_observation,
         step_count=len(obs_history),
         history_length=len(obs_history),
         action_history=action_history,
