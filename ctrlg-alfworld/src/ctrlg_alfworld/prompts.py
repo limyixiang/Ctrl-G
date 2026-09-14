@@ -91,7 +91,7 @@ def build_user_prompt(
     obs_template = obs_template.format(
         task_description=task_description,
         step_count=len(obs_history),
-        history_length=min(3, len(obs_history)),
+        history_length=len(obs_history),
         action_history=action_history,
         current_step=len(obs_history)+1,
         current_observation=current_observation,
