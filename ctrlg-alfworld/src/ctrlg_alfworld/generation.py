@@ -130,7 +130,6 @@ def parse_turn(raw_head: str, raw_tail: str, *, use_decision: bool) -> ParsedTur
 
     errors: list[str] = []
     native_think_closed = THINK_CLOSE in raw_head
-    action_open_found = ACTION_OPEN in raw_head
     action_close_found = ACTION_CLOSE in raw_tail
     if action_close_found:
         post_action = raw_tail.split(ACTION_CLOSE, 1)[1]
@@ -154,6 +153,7 @@ def parse_turn(raw_head: str, raw_tail: str, *, use_decision: bool) -> ParsedTur
         else 0
     )
     action_open_start = raw_head.find(ACTION_OPEN, post_think_start)
+    action_open_found = action_open_start >= 0
     if action_open_start < 0:
         hmm_prefix_text = raw_head[post_think_start:]
         pre_action_text = hmm_prefix_text
@@ -174,8 +174,15 @@ def parse_turn(raw_head: str, raw_tail: str, *, use_decision: bool) -> ParsedTur
         if not decision_format_ok:
             errors.append("unexpected_pre_action_text")
 
-    combined = raw_head + raw_tail
-    action_match = ACTION_RE.search(combined)
+    # Scope action parsing to the canonical opener after native thinking.
+    # Native reasoning may itself mention or demonstrate <action> tags; searching
+    # the entire head would mistake those examples for the emitted action.
+    action_text = (
+        raw_head[action_open_start:] + raw_tail
+        if action_open_found
+        else raw_tail
+    )
+    action_match = ACTION_RE.search(action_text)
     if action_match:
         action = action_match.group(1).strip()
     else:

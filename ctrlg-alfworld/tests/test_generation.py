@@ -37,6 +37,33 @@ class GenerationParsingTests(unittest.TestCase):
         )
         self.assertEqual(parsed.action, "go to shelf 2")
 
+    def test_tags_inside_native_thought_do_not_override_emitted_blocks(self):
+        parsed = parse_turn(
+            (
+                "Consider <decision>wait</decision> and "
+                "<action>inventory</action>.</think>"
+                "<decision>Continue searching.</decision><action>"
+            ),
+            "look</action>",
+            use_decision=True,
+        )
+        self.assertTrue(parsed.parse_ok)
+        self.assertEqual(parsed.decision, "Continue searching.")
+        self.assertEqual(parsed.action, "look")
+
+    def test_unclosed_action_tag_inside_native_thought_is_ignored(self):
+        parsed = parse_turn(
+            (
+                "Do not emit <action>inventory yet.</think>"
+                "<decision>Continue searching.</decision><action>"
+            ),
+            "look</action>",
+            use_decision=True,
+        )
+        self.assertTrue(parsed.parse_ok)
+        self.assertEqual(parsed.decision, "Continue searching.")
+        self.assertEqual(parsed.action, "look")
+
     def test_unexpected_text_is_measured_not_silently_discarded(self):
         parsed = parse_turn(
             "reason</think>Maybe this one.<action>",
