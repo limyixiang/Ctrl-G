@@ -34,8 +34,10 @@ class JsonlToJsonTests(unittest.TestCase):
 
             self.assertEqual(written, 2)
             self.assertEqual(removed, 3)
+            output_text = destination.read_text(encoding="utf-8")
+            self.assertIn('\n  {\n    "prompt_text": "hello",', output_text)
             self.assertEqual(
-                json.loads(destination.read_text(encoding="utf-8")),
+                json.loads(output_text),
                 [
                     {"prompt_text": "hello", "nested": {"keep": True}},
                     {"action": "look"},
