@@ -73,13 +73,13 @@ preconditions:
   - hand_empty
 ```
 
-put
+move
 
-Put the object you are holding in/on the receptacle you are currently at.
+Place the object you are holding in/on the receptacle you are currently at.
 
 ```action
-name: put
-template: "put {obj} in/on {recep}"
+name: move
+template: "move {obj} to {recep}"
 preconditions:
   - at({recep})
   - holding({obj})
@@ -199,7 +199,7 @@ The decision must contain a single flow-style YAML mapping that summarizes the t
 
 Example:
 
-<decision>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, search: {locations_to_search: [drawer 1, drawer 2], locations_searched: [countertop 1, dresser 1]}, phase: acquire_second}</decision>
+<decision>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, search: {locations_searched: [countertop 1, dresser 1], locations_to_search: [drawer 1, drawer 2]}, phase: acquire_second}</decision>
 <action>go to countertop 1</action>
 
 ### Value Rules
@@ -222,56 +222,49 @@ Example:
 
 Every decision must include a `search` mapping:
 
-- `locations_to_search`: ordered exact receptacle instances whose contents
-  have not yet been observed during the current target search.
-- `locations_searched`: exact receptacle instances whose contents have already
-  been observed.
+- `locations_to_search`: ordered exact receptacle instances whose contents have not yet been observed during the current target search.
+- `locations_searched`: exact receptacle instances whose contents have already been observed.
 - The two lists must not overlap.
 - Copy exact numbered identifiers from the initial observation and trajectory.
-- Visiting a closed container does not count as searching it. Move it to
-  `locations_searched` only after opening it and observing its contents.
-- Do not reset the ledger after visiting a tool, checking inventory,
-  transforming an object, or delivering the first object in a pick-two task.
-- A searched location may be revisited to acquire a target known to be there
-  or to use it as a tool or destination. It must not be revisited merely to
-  search it again.
-- If the target has not been found, the next search action should normally
-  inspect the first admissible entry in `locations_to_search`.
+- Visiting a closed container does not count as searching it. Move it to `locations_searched` only after opening it and observing its contents.
+- Do not reset the ledger after visiting a tool, checking inventory, transforming an object, or delivering the first object in a pick-two task.
+- A searched location may be revisited to acquire a target known to be there or to use it as a tool or destination. It must not be revisited merely to search it again.
+- If the target has not been found, the next search action should normally inspect the first admissible entry in `locations_to_search`.
 
 ### Task-specific Decision Schemas
 
 Pick and place:
 
-`{task: put, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, search: {locations_to_search: [RECEPTACLE, ...], locations_searched: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: put, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_destination`, `prepare_destination`, `deliver`.
 
 Clean and place:
 
-`{task: clean, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|clean|unknown, tool: SINKBASIN|unknown, dest: RECEPTACLE|unknown, search: {locations_to_search: [RECEPTACLE, ...], locations_searched: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: clean, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|clean|unknown, tool: SINKBASIN|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_tool`, `transform`, `go_destination`, `prepare_destination`, `deliver`.
 
 Heat and place:
 
-`{task: heat, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|hot|unknown, tool: MICROWAVE|unknown, dest: RECEPTACLE|unknown, search: {locations_to_search: [RECEPTACLE, ...], locations_searched: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: heat, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|hot|unknown, tool: MICROWAVE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_tool`, `transform`, `go_destination`, `prepare_destination`, `deliver`.
 
 Cool and place:
 
-`{task: cool, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|cool|unknown, tool: FRIDGE|unknown, dest: RECEPTACLE|unknown, search: {locations_to_search: [RECEPTACLE, ...], locations_searched: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: cool, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|cool|unknown, tool: FRIDGE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_tool`, `transform`, `go_destination`, `prepare_destination`, `deliver`.
 
 Examine under a desklamp:
 
-`{task: examine, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, tool: DESKLAMP|unknown, tool_location: RECEPTACLE|unknown, tool_state: inactive|active|unknown, search: {locations_to_search: [RECEPTACLE, ...], locations_searched: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: examine, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, tool: DESKLAMP|unknown, tool_location: RECEPTACLE|unknown, tool_state: inactive|active|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search_target`, `acquire`, `search_tool`, `go_tool`, `use_tool`.
 
 Pick two and place:
 
-`{task: puttwo, target_type: TYPE, required_count: 2, targets: [{id: ENTITY|unknown, location: RECEPTACLE|unknown, status: available|held|placed|unknown}, ...], held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, search: {locations_to_search: [RECEPTACLE, ...], locations_searched: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: puttwo, target_type: TYPE, required_count: 2, targets: [{id: ENTITY|unknown, location: RECEPTACLE|unknown, status: available|held|placed|unknown}, ...], held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_destination`, `prepare_destination`, `deliver_first`, `acquire_second`, `deliver_second`.

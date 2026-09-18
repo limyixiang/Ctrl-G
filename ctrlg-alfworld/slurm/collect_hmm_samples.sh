@@ -6,14 +6,20 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:h100-96:1
+#SBATCH --gres=gpu:h100-47:1
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=e1121685@u.nus.edu
 
 # to run a pilot test:
-# MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=1 OUTPUT=results/alfworld/pilot_actions_hidden sbatch -t 3:00:00 -p gpu --gres=gpu:h100-47:1 ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MAcdmples.sh
+
+# 100 sample test
+# MODEL=Qwen/Qwen3.5-9B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/9b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=9b ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MODEL=Qwen/Qwen3.5-4B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/4b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=4b ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MODEL=Qwen/Qwen3.5-2B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/2b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=2b ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MODEL=Qwen/Qwen3.5-0.8B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/0.8b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=0.8b ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 # actual runs
 # RESUME=1 SHOW_ADMISSIBLE_ACTIONS=0 OUTPUT=results/alfworld/actions_hidden/hmm_samples_h100_96 sbatch --job-name=alfworld-hidden ctrlg-alfworld/slurm/collect_hmm_samples.sh
@@ -32,7 +38,7 @@ export HF_HOME="${HF_HOME:-$WORKDIR/.hf_cache}"
 export TOKENIZERS_PARALLELISM=false
 
 MODEL=${MODEL:-Qwen/Qwen3.5-9B}
-SERVED_NAME=Qwen/Qwen3.5-9B
+SERVED_NAME=${SERVED_NAME:-$MODEL}
 EPISODES=${EPISODES:-3553}
 TEMPERATURE=${TEMPERATURE:-0.7}
 if [[ "${RESUME:-0}" == "1" && -z "${OUTPUT:-}" ]]; then
@@ -94,11 +100,11 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --base_url "http://127.0.0.1:$PORT/v1" \
   --num_episodes "$EPISODES" \
   --temperature "$TEMPERATURE" \
-  --max_hmm_sequence_tokens 256 \
+  --max_hmm_sequence_tokens 768 \
   --max_thought_tokens 1024 \
-  --max_decision_tokens 256 \
+  --max_decision_tokens 512 \
   "${PROMPT_ARGS[@]}" \
   "${OUTPUT_ARGS[@]}" \
   --out "$OUTPUT"
 
-jq '.' results/alfworld/pilot_actions_hidden/history.jsonl > results/alfworld/pilot_actions_hidden/history.json
+jq -s '.' "$OUTPUT/history.jsonl" > "$OUTPUT/history.json"
