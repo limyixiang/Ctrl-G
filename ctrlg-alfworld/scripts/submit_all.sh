@@ -16,7 +16,7 @@ submit() {
         ctrlg-alfworld/slurm/collect_hmm_samples.sh
 }
 
-# submit "Qwen/Qwen3.5-9B"   "9b"   "results/alfworld/9b_actions_hidden"
-# submit "Qwen/Qwen3.5-4B"   "4b"   "results/alfworld/4b_actions_hidden"
-# submit "Qwen/Qwen3.5-2B"   "2b"   "results/alfworld/2b_actions_hidden"
-submit "Qwen/Qwen3.5-0.8B" "0.8b" "results/alfworld/0.8b_actions_hidden"
+# submit "Qwen/Qwen3.5-9B"   "9b"   "results/alfworld/9b_policy_hmm"
+# submit "Qwen/Qwen3.5-4B"   "4b"   "results/alfworld/4b_policy_hmm"
+# submit "Qwen/Qwen3.5-2B"   "2b"   "results/alfworld/2b_policy_hmm"
+submit "Qwen/Qwen3.5-0.8B" "0.8b" "results/alfworld/0.8b_policy_hmm"

@@ -36,15 +36,12 @@ def build_user_prompt(
     obs_history: list[Step],
     *,
     use_decision: bool,
-    admissible_actions: list[str] | None = None,
-    show_admissible_actions: bool = False,
 ):
     """Build one prompt for the matched decision-agent experiment.
 
-    TextWorld's admissible commands stay out of the model-visible prompt in the
-    default experiment. They are passed separately to the decoder to build the
-    DFA. ``show_admissible_actions`` enables a matched prompt-visible regime
-    that must be used consistently for sample collection and evaluation.
+    TextWorld's admissible commands are never accepted by this function. Both
+    experimental conditions therefore receive byte-identical skill and prompt
+    content for an identical trajectory.
 
     Native model thinking is enabled by :func:`render_prompt`, so this prompt
     must not request a second, manually generated ``<think>`` block.
@@ -62,18 +59,6 @@ def build_user_prompt(
         action_history.append(f"Step {idx+1}: {h.action.strip()}")
         action_history.append(f"\t> {h.observation.strip()}")
     action_history = "\n".join(action_history)
-
-    if show_admissible_actions:
-        # The environment's command order is not semantically meaningful. Keep
-        # it from becoming an accidental prompt variable while leaving the
-        # original list untouched for decoding and rollout fallback behavior.
-        actions = sorted(admissible_actions or [])
-        admissible_actions_section = (
-            "Your admissible actions in the current situation are: "
-            f"[{', '.join(actions)}]."
-        )
-    else:
-        admissible_actions_section = ""
 
     # if use_decision:
     #     decision_instruction = (
@@ -101,7 +86,6 @@ def build_user_prompt(
         action_history=action_history,
         current_step=len(obs_history)+1,
         current_observation=current_observation,
-        admissible_actions_section=admissible_actions_section,
         decision_instruction=decision_instruction,
         action_open=ACTION_OPEN,
         action_close=ACTION_CLOSE

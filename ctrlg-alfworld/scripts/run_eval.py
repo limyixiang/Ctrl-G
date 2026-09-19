@@ -2,7 +2,7 @@ import argparse
 import json
 import random
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -41,10 +41,10 @@ def resolve_hmm_path(
     return hmm
 
 
-def validate_hmm_prompt_regime(
-    hmm_path: str | None, *, show_admissible_actions: bool
-) -> tuple[str | None, bool | None]:
-    """Validate new checkpoints while allowing legacy checkpoints without metadata."""
+def validate_hmm_provenance(
+    hmm_path: str | None, *, skillset: SkillSet, model: str
+) -> tuple[str | None, dict | None]:
+    """Require evaluator-matched, no-oracle action-HMM provenance."""
 
     if hmm_path is None:
         return None, None
@@ -55,22 +55,27 @@ def validate_hmm_prompt_regime(
     )
     metadata_path = next((path for path in candidates if path.is_file()), None)
     if metadata_path is None:
-        return None, None
+        raise ValueError(f"{checkpoint} has no {HMM_TRAINING_METADATA}")
 
     with open(metadata_path) as metadata_file:
         metadata = json.load(metadata_file)
-    trained_with_actions = metadata.get("show_admissible_actions")
-    if not isinstance(trained_with_actions, bool):
-        raise ValueError(
-            f"{metadata_path} does not define boolean show_admissible_actions"
-        )
-    if trained_with_actions != show_admissible_actions:
-        raise ValueError(
-            "HMM prompt regime does not match evaluation: "
-            f"checkpoint metadata has show_admissible_actions={trained_with_actions}, "
-            f"evaluation has show_admissible_actions={show_admissible_actions}"
-        )
-    return str(metadata_path.resolve()), trained_with_actions
+    expected = {
+        "skills_sha256": skillset.content_sha256,
+        "schema_version": skillset.schema_version,
+        "policy_version": skillset.policy_version,
+        "no_oracle_filtering": True,
+        "constrained_decision_collection": True,
+        "model": model,
+        "tokenizer": model,
+        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+    }
+    mismatches = [
+        f"{key}: checkpoint={metadata.get(key)!r}, evaluation={value!r}"
+        for key, value in expected.items() if metadata.get(key) != value
+    ]
+    if mismatches:
+        raise ValueError("HMM provenance mismatch: " + "; ".join(mismatches))
+    return str(metadata_path.resolve()), metadata
 
 
 def main():
@@ -90,8 +95,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--beam_size", type=int, default=8)
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
-    parser.add_argument("--max_decision_tokens", type=int, default=64)
-    parser.add_argument("--max_action_tokens", type=int, default=24)
+    parser.add_argument("--max_decision_tokens", type=int, default=512)
+    parser.add_argument("--max_action_tokens", type=int, default=32)
     parser.add_argument("--min_action_tokens", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--rollout_temperature", type=float, default=0.7)
@@ -104,28 +109,20 @@ def main():
         choices=["float16", "bfloat16", "float32"],
         default="bfloat16",
     )
-    parser.add_argument(
-        "--show_admissible_actions",
-        action="store_true",
-        help=(
-            "Include current admissible commands in the model-visible prompt. "
-            "Disabled by default and must match HMM sample collection."
-        ),
-    )
     parser.add_argument("--out", default="out/eval")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     condition = get_condition(args.condition)
+    skillset = SkillSet.from_file(args.skills)
     try:
         hmm_path = resolve_hmm_path(
             condition,
             hmm=args.hmm,
         )
-        hmm_training_metadata, hmm_training_show_admissible_actions = (
-            validate_hmm_prompt_regime(
-                hmm_path,
-                show_admissible_actions=args.show_admissible_actions,
+        hmm_training_metadata, hmm_provenance = (
+            validate_hmm_provenance(
+                hmm_path, skillset=skillset, model=args.model
             )
         )
     except ValueError as exc:
@@ -149,7 +146,6 @@ def main():
     env_factory.num_games = len(env_factory.game_files)
     env = env_factory.init_env(batch_size=1)
 
-    skillset = SkillSet.from_file(args.skills)
     generation_config = GenConfig(
         max_thought_tokens=args.max_thought_tokens,
         max_decision_tokens=args.max_decision_tokens,
@@ -176,6 +172,8 @@ def main():
     summary_path = output_directory / f"summary_{condition.name.value}.json"
 
     per_type = defaultdict(lambda: [0, 0])
+    rule_activations = Counter()
+    rule_violations = Counter()
     episode_gamefiles = []
     totals = {
         "episodes": 0,
@@ -183,6 +181,11 @@ def main():
         "actions": 0,
         "admissible_actions": 0,
         "parsed_turns": 0,
+        "decision_schema_valid_turns": 0,
+        "action_grammar_valid_turns": 0,
+        "policy_evaluable_turns": 0,
+        "policy_satisfied_turns": 0,
+        "policy_fallback_turns": 0,
         "hmm_applied_turns": 0,
         "head_truncated_turns": 0,
         "thought_truncated_turns": 0,
@@ -210,7 +213,6 @@ def main():
                 condition,
                 max_steps=args.max_steps,
                 greedy_head=not args.sample_head,
-                show_admissible_actions=args.show_admissible_actions,
                 verbose=args.verbose,
             )
             output_file.write(json.dumps(record.to_dict()) + "\n")
@@ -225,6 +227,14 @@ def main():
                 totals["actions"] += 1
                 totals["admissible_actions"] += int(step.action_was_admissible)
                 totals["parsed_turns"] += int(step.parse_ok)
+                totals["decision_schema_valid_turns"] += int(step.decision_schema_valid)
+                totals["action_grammar_valid_turns"] += int(step.action_grammar_valid)
+                totals["policy_evaluable_turns"] += int(step.policy_evaluable)
+                totals["policy_satisfied_turns"] += int(step.policy_satisfied is True)
+                totals["policy_fallback_turns"] += int(step.policy_fallback_reason is not None)
+                rule_activations.update(step.activated_policies)
+                if step.policy_satisfied is False:
+                    rule_violations.update(step.activated_policies)
                 totals["hmm_applied_turns"] += int(step.hmm_applied)
                 totals["head_truncated_turns"] += int(step.head_truncated)
                 totals["thought_truncated_turns"] += int(step.thought_truncated)
@@ -255,20 +265,20 @@ def main():
         "condition": condition.name.value,
         "factors": {
             "use_decision": condition.use_decision,
-            "use_dfa": condition.use_dfa,
+            "use_decision_dfa": condition.use_decision_dfa,
+            "use_action_dfa": condition.use_action_dfa,
             "use_hmm": condition.use_hmm,
-            "show_admissible_actions": args.show_admissible_actions,
         },
         "model": args.model,
+        "tokenizer": args.model,
+        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
         "hmm": hmm_path,
         "hmm_sha256": artifact_sha256(hmm_path) if hmm_path else None,
         "hmm_training_metadata": hmm_training_metadata,
         "hmm_training_metadata_sha256": (
             file_sha256(hmm_training_metadata) if hmm_training_metadata else None
         ),
-        "hmm_training_show_admissible_actions": (
-            hmm_training_show_admissible_actions
-        ),
+        "hmm_provenance": hmm_provenance,
         "split": args.split,
         "seed": args.seed,
         "max_steps": args.max_steps,
@@ -283,7 +293,6 @@ def main():
         "num_episodes": args.num_episodes,
         "sample_actions": args.sample_actions,
         "sample_head": args.sample_head,
-        "show_admissible_actions": args.show_admissible_actions,
         "device": args.device,
         "dtype": args.dtype,
         "episode_gamefiles": episode_gamefiles,
@@ -291,7 +300,9 @@ def main():
         "config": str(Path(args.config).resolve()),
         "config_sha256": file_sha256(args.config),
         "skills": str(Path(args.skills).resolve()),
-        "skills_sha256": file_sha256(args.skills),
+        "skills_sha256": skillset.content_sha256,
+        "schema_version": skillset.schema_version,
+        "policy_version": skillset.policy_version,
         "git_revision": git_revision(ROOT.parent),
         "source_tree_sha256": source_tree_sha256(ROOT),
         "runtime": runtime_versions(),
@@ -300,6 +311,11 @@ def main():
             "success_rate": totals["successes"] / max(totals["episodes"], 1),
             "admissibility_rate": totals["admissible_actions"] / action_count,
             "parse_rate": totals["parsed_turns"] / action_count,
+            "decision_schema_validity_rate": totals["decision_schema_valid_turns"] / action_count,
+            "action_grammar_validity_rate": totals["action_grammar_valid_turns"] / action_count,
+            "policy_evaluability_rate": totals["policy_evaluable_turns"] / action_count,
+            "policy_adherence_rate": totals["policy_satisfied_turns"] / max(totals["policy_evaluable_turns"], 1),
+            "policy_fallback_rate": totals["policy_fallback_turns"] / action_count,
             "hmm_applied_rate": totals["hmm_applied_turns"] / action_count,
             "head_truncation_rate": totals["head_truncated_turns"] / action_count,
             "thought_truncation_rate": (
@@ -328,6 +344,8 @@ def main():
                 totals["decision_latency_seconds"] / action_count
             ),
             "mean_action_latency_seconds": totals["action_latency_seconds"] / action_count,
+            "per_rule_activations": dict(sorted(rule_activations.items())),
+            "per_rule_violations": dict(sorted(rule_violations.items())),
         },
         "per_task_type": {
             key: {

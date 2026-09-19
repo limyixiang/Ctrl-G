@@ -15,15 +15,8 @@
 # to run a pilot test:
 # MAcdmples.sh
 
-# 100 sample test
-# MODEL=Qwen/Qwen3.5-9B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/9b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=9b ctrlg-alfworld/slurm/collect_hmm_samples.sh
-# MODEL=Qwen/Qwen3.5-4B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/4b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=4b ctrlg-alfworld/slurm/collect_hmm_samples.sh
-# MODEL=Qwen/Qwen3.5-2B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/2b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=2b ctrlg-alfworld/slurm/collect_hmm_samples.sh
-# MODEL=Qwen/Qwen3.5-0.8B MAX_STEPS=50 OVERWRITE=1 SHOW_ADMISSIBLE_ACTIONS=0 EPISODES=100 OUTPUT=results/alfworld/0.8b_actions_hidden sbatch -t 72:00:00 -p gpu --gres=gpu:h100-47:1 --job-name=0.8b ctrlg-alfworld/slurm/collect_hmm_samples.sh
-
-# actual runs
-# RESUME=1 SHOW_ADMISSIBLE_ACTIONS=0 OUTPUT=results/alfworld/actions_hidden/hmm_samples_h100_96 sbatch --job-name=alfworld-hidden ctrlg-alfworld/slurm/collect_hmm_samples.sh
-# RESUME=1 SHOW_ADMISSIBLE_ACTIONS=1 OUTPUT=results/alfworld/actions_shown/hmm_samples_h100_96 sbatch --job-name=alfworld-shown ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# Example:
+# MODEL=Qwen/Qwen3.5-9B OVERWRITE=1 EPISODES=100 OUTPUT=results/alfworld/9b_policy_hmm sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 set -euo pipefail
 
@@ -47,10 +40,6 @@ if [[ "${RESUME:-0}" == "1" && -z "${OUTPUT:-}" ]]; then
 fi
 OUTPUT=${OUTPUT:-results/alfworld/hmm_samples_${SLURM_JOB_ID}}
 PORT=$((8000 + SLURM_JOB_ID % 1000))
-PROMPT_ARGS=()
-if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
-  PROMPT_ARGS+=(--show_admissible_actions)
-fi
 OUTPUT_ARGS=()
 if [[ "${RESUME:-0}" == "1" && "${OVERWRITE:-0}" == "1" ]]; then
   echo "RESUME=1 and OVERWRITE=1 are mutually exclusive" >&2
@@ -100,10 +89,10 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --base_url "http://127.0.0.1:$PORT/v1" \
   --num_episodes "$EPISODES" \
   --temperature "$TEMPERATURE" \
-  --max_hmm_sequence_tokens 768 \
+  --max_hmm_sequence_tokens 640 \
   --max_thought_tokens 1024 \
   --max_decision_tokens 512 \
-  "${PROMPT_ARGS[@]}" \
+  --max_action_tokens 32 \
   "${OUTPUT_ARGS[@]}" \
   --out "$OUTPUT"
 

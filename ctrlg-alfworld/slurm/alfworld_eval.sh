@@ -13,9 +13,9 @@
 # Compatibility single-condition launcher. For the matched two-condition
 # array use ctrlg-alfworld/slurm/eval_grid.sh.
 #
-#   sbatch ctrlg-alfworld/slurm/alfworld_eval.sh decision_dfa 20 50
+#   sbatch ctrlg-alfworld/slurm/alfworld_eval.sh decision_prompt 20 50
 #   HMM=results/.../checkpoint-N \
-#     sbatch ctrlg-alfworld/slurm/alfworld_eval.sh decision_dfa_hmm 134 50
+#     sbatch ctrlg-alfworld/slurm/alfworld_eval.sh decision_ctrlg 134 50
 
 set -euo pipefail
 
@@ -28,18 +28,13 @@ export ALFWORLD_DATA="${ALFWORLD_DATA:-$WORKDIR/alfworld_data}"
 export HF_HOME="${HF_HOME:-$WORKDIR/.hf_cache}"
 export TOKENIZERS_PARALLELISM=false
 
-CONDITION=${1:-decision_dfa}
+CONDITION=${1:-decision_prompt}
 EPISODES=${2:-134}
 MAX_STEPS=${3:-50}
 MODEL=${MODEL:-$WORKDIR/models/Qwen3.5-9B}
 OUTPUT=${OUTPUT:-results/alfworld/single_${CONDITION}_${SLURM_JOB_ID}}
-PROMPT_ARGS=()
-if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
-  PROMPT_ARGS+=(--show_admissible_actions)
-fi
-
 HMM_ARGS=()
-if [[ "$CONDITION" == "decision_dfa_hmm" ]]; then
+if [[ "$CONDITION" == "decision_ctrlg" ]]; then
   : "${HMM:?Set HMM to the matched decision-format checkpoint directory}"
   HMM_ARGS=(--hmm "$HMM")
 fi
@@ -48,7 +43,6 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --model "$MODEL" \
   --condition "$CONDITION" \
   "${HMM_ARGS[@]}" \
-  "${PROMPT_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --max_steps "$MAX_STEPS" \
   --out "$OUTPUT"

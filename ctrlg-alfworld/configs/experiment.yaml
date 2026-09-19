@@ -1,15 +1,13 @@
 experiment:
   conditions:
-    - decision_dfa
-    - decision_dfa_hmm
-  estimand: "effect of adding the matched decision-format Ctrl-G HMM to the persistent-decision-memory DFA agent"
-  # CLI launchers may enable the matched prompt-visible regime explicitly.
-  show_admissible_actions: false
+    - decision_prompt
+    - decision_ctrlg
+  estimand: "effect of schema/policy constrained Ctrl-G over the byte-identical prompt-only agent"
   seed: 42
   max_steps: 50
   max_thought_tokens: 1024
-  max_decision_tokens: 64
-  max_action_tokens: 24
+  max_decision_tokens: 512
+  max_action_tokens: 32
   min_action_tokens: 1
   beam_size: 8
   temperature: 1.0
@@ -18,7 +16,7 @@ experiment:
 
 distillation:
   prompt_format: "decision block with persistent decision-history replay"
-  sampling_policy: "single trajectory; resample only empty actions"
+  sampling_policy: "hard-DFA decisions followed by unconstrained actions; resample only empty actions"
   split_policy: "state-group train/dev split"
   sequence: "generated post-think text through <action>, action body, </action>, EOS"
   excludes:
@@ -30,7 +28,8 @@ distillation:
 invariants:
   use_state_tracker: false
   decision_history_replay: true
-  dfa_source: "TextWorld info['admissible_commands']"
-  dfa_scope: "action body"
-  same_prompt_and_dfa_across_conditions: true
+  admissible_commands_generation_use: false
+  dfa_source: "versioned SKILLS.md schemas/policies plus model-declared decision fields"
+  dfa_scope: "decision body plus closer; action body plus closer"
+  same_prompt_and_skills_across_conditions: true
   evaluation_backend: "in-process Hugging Face"

@@ -9,6 +9,12 @@ from .prompts import (
 )
 from .experiment import ExperimentCondition, get_condition
 from .skills import SkillSet
+from .constraints import (
+    action_grammar_valid,
+    compile_policy_language,
+    parse_decision,
+    policy_satisfied,
+)
 
 
 TASK_DESCRIPTION_PREFIX = "Your task is to:"
@@ -70,6 +76,14 @@ class StepRecord:
     thought_latency_seconds: float
     decision_latency_seconds: float
     action_latency_seconds: float
+    decision_schema_valid: bool
+    decision_fields: dict
+    action_grammar_valid: bool
+    activated_policies: list[str]
+    shadowed_policies: list[str]
+    policy_evaluable: bool
+    policy_satisfied: bool | None
+    policy_fallback_reason: str | None
 
 
 @dataclass
@@ -91,7 +105,6 @@ def run_episode(
     condition: str | ExperimentCondition,
     max_steps: int = 50,
     greedy_head: bool = True,
-    show_admissible_actions: bool = False,
     verbose: bool = False,
 ) -> EpisodeRecord:
     condition = (
@@ -125,8 +138,6 @@ def run_episode(
             current_observation=obs,
             obs_history=steps,
             use_decision=condition.use_decision,
-            admissible_actions=admissible_actions,
-            show_admissible_actions=show_admissible_actions,
         )
 
         prompt_text = render_prompt(backend.tokenizer, system_prompt, user_prompt)
@@ -139,12 +150,40 @@ def run_episode(
 
         turn = backend.generate_turn(
             prompt_text,
-            admissible_actions,
-            use_decision=condition.use_decision,
-            use_hmm=condition.use_hmm,
+            skillset,
+            task_key,
+            constrained=condition.use_decision_dfa,
             greedy_head=greedy_head,
         )
         action = turn.parsed.action
+
+        decision_schema_valid = turn.decision_schema_valid
+        decision_fields = turn.decision_fields
+        activated_policies = turn.activated_policies
+        shadowed_policies = turn.shadowed_policies
+        policy_evaluable = turn.policy_evaluable
+        policy_adherence = turn.policy_satisfied
+        policy_fallback_reason = turn.policy_fallback_reason
+        grammar_valid = turn.action_grammar_valid
+        if not condition.use_decision_dfa:
+            grammar_valid = action_grammar_valid(action, skillset)
+            try:
+                decision_fields = parse_decision(
+                    turn.parsed.decision, skillset.decision_schemas[task_key], skillset
+                )
+                decision_schema_valid = True
+                policy = compile_policy_language(decision_fields, skillset)
+                activated_policies = policy.activated
+                shadowed_policies = policy.shadowed
+                policy_evaluable = policy.evaluable
+                policy_adherence = policy_satisfied(action, policy)
+                policy_fallback_reason = policy.fallback_reason
+            except ValueError as exc:
+                decision_fields = {}
+                decision_schema_valid = False
+                policy_evaluable = False
+                policy_adherence = None
+                policy_fallback_reason = f"invalid_decision_schema: {exc}"
 
         ob, reward, done, info = env.step([action])
         obs = process_ob(ob[0])
@@ -182,6 +221,14 @@ def run_episode(
             thought_latency_seconds=turn.thought_latency_seconds,
             decision_latency_seconds=turn.decision_latency_seconds,
             action_latency_seconds=turn.action_latency_seconds,
+            decision_schema_valid=decision_schema_valid,
+            decision_fields=decision_fields,
+            action_grammar_valid=grammar_valid,
+            activated_policies=list(activated_policies),
+            shadowed_policies=list(shadowed_policies),
+            policy_evaluable=policy_evaluable,
+            policy_satisfied=policy_adherence,
+            policy_fallback_reason=policy_fallback_reason,
         ))
         steps.append(Step(
             thought=turn.parsed.thought,

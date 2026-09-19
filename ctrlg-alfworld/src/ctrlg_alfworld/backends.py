@@ -6,19 +6,18 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import torch
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    LogitsProcessorList,
-    StoppingCriteria,
-    StoppingCriteriaList,
-)
 
 from .constraints import (
-    FiniteActionLogitsProcessor,
-    build_action_dfa,
+    HardDFALogitsProcessor,
+    action_grammar_valid,
+    compile_policy_language,
+    decision_span_pattern,
+    dfa_accepts,
+    lift_character_fsm,
+    parse_decision,
+    policy_satisfied,
+    regex_fsm,
     tokenize_fixed_suffix,
-    tokenize_continuation,
 )
 from .generation import (
     GeneratedChunk,
@@ -36,6 +35,7 @@ from .prompts import (
     DECISION_OPEN,
     THINK_CLOSE,
 )
+from .skills import SkillSet
 
 torch.backends.cuda.enable_cudnn_sdp(False)
 
@@ -45,7 +45,7 @@ def _synchronize_if_cuda(device) -> None:
         torch.cuda.synchronize(device)
 
 
-class StopOnStrings(StoppingCriteria):
+class StopOnStrings:
     def __init__(self, stop_strings, tokenizer, prompt_len: int):
         self.stop_strings = tuple(stop_strings)
         self.tokenizer = tokenizer
@@ -66,8 +66,8 @@ class StopOnStrings(StoppingCriteria):
 @dataclass
 class GenConfig:
     max_thought_tokens: int = 1024
-    max_decision_tokens: int = 64
-    max_action_tokens: int = 24
+    max_decision_tokens: int = 512
+    max_action_tokens: int = 32
     min_action_tokens: int = 1
     beam_size: int = 8
     do_sample: bool = False
@@ -340,9 +340,12 @@ class HFBackend(BaseBackend):
         model_name_or_path: str,
         hmm_path: str | None = None,
         device: str = "cuda",
-        dtype=torch.bfloat16,
+        dtype=None,
         gen_config: GenConfig | None = None,
     ):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        dtype = dtype or torch.bfloat16
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path, torch_dtype=dtype
@@ -367,6 +370,8 @@ class HFBackend(BaseBackend):
         max_new_tokens: int,
         temperature: float | None = None,
     ) -> GeneratedChunk:
+        from transformers import StoppingCriteriaList
+
         prompt_ids = self.tokenizer.encode(
             prompt_text, add_special_tokens=False, return_tensors="pt"
         ).to(self.device)
@@ -399,41 +404,44 @@ class HFBackend(BaseBackend):
             latency_seconds=latency,
         )
 
-    def _generate_dfa_action(
-        self, prompt_text: str, allowed_actions: list[str]
+    def _generate_dfa_span(
+        self,
+        prompt_text: str,
+        dfa_graph: dict,
+        *,
+        stop_string: str,
+        max_new_tokens: int,
+        sample: bool = False,
     ) -> GeneratedChunk:
+        from transformers import LogitsProcessorList, StoppingCriteriaList
+
         _synchronize_if_cuda(self.device)
         started = time.perf_counter()
         prompt_ids = self.tokenizer.encode(
             prompt_text, add_special_tokens=False, return_tensors="pt"
         ).to(self.device)
-        processor = FiniteActionLogitsProcessor(
-            self.tokenizer,
-            prompt_text,
-            allowed_actions,
+        processor = HardDFALogitsProcessor(
+            dfa_graph,
             prompt_length=prompt_ids.shape[1],
+            max_new_tokens=max_new_tokens,
             eos_token_id=self.tokenizer.eos_token_id,
         )
-        stopper = StopOnStrings(
-            [ACTION_CLOSE], self.tokenizer, prompt_ids.shape[1]
-        )
-        max_path_length = max(len(path) for path in processor.paths)
+        stopper = StopOnStrings([stop_string], self.tokenizer, prompt_ids.shape[1])
         with torch.no_grad():
             output = self.model.generate(
                 input_ids=prompt_ids,
-                do_sample=self.cfg.do_sample,
-                temperature=self.cfg.temperature if self.cfg.do_sample else None,
-                num_beams=1 if self.cfg.do_sample else self.cfg.beam_size,
+                do_sample=sample,
+                temperature=self.cfg.temperature if sample else None,
+                num_beams=1 if sample else self.cfg.beam_size,
                 num_return_sequences=1,
-                min_new_tokens=self.cfg.min_action_tokens,
-                max_new_tokens=max(max_path_length, self.cfg.max_action_tokens),
+                max_new_tokens=max_new_tokens,
                 logits_processor=LogitsProcessorList([processor]),
                 stopping_criteria=StoppingCriteriaList([stopper]),
                 pad_token_id=self.tokenizer.eos_token_id,
             )
         token_ids = output[0][prompt_ids.shape[1] :].tolist()
         text, token_ids, stop_found = _crop_chunk_at_stop(
-            self.tokenizer, token_ids, [ACTION_CLOSE]
+            self.tokenizer, token_ids, [stop_string]
         )
         _synchronize_if_cuda(self.device)
         latency = time.perf_counter() - started
@@ -445,47 +453,30 @@ class HFBackend(BaseBackend):
             latency_seconds=latency,
         )
 
-    def _generate_hmm_action(
+    def _generate_hmm_span(
         self,
         prompt_text: str,
-        allowed_actions: list[str],
+        dfa_graph: dict,
         prefix_ids: list[int],
-    ) -> tuple[str, tuple[int, ...], tuple[int, ...], float]:
+    ) -> GeneratedChunk:
+        from transformers import LogitsProcessorList
+
         if self.hmm_model is None:
-            raise ValueError("DFA+HMM condition requires an HMM checkpoint")
+            raise ValueError("decision_ctrlg requires an action HMM checkpoint")
 
         _synchronize_if_cuda(self.device)
         started = time.perf_counter()
         import ctrlg
 
         prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        dfa_graph, action_sequences = build_action_dfa(
-            allowed_actions, self.tokenizer, self.vocab_size, prompt_text
-        )
         dfa_model = ctrlg.DFAModel(dfa_graph, self.vocab_size).to(self.device)
-
-        suffix_variants = set()
-        for action, body_ids in action_sequences.items():
-            suffix_for_action = tokenize_fixed_suffix(
-                self.tokenizer,
-                prompt_ids + body_ids,
-                ACTION_CLOSE,
-            )
-            suffix_variants.add(tuple(suffix_for_action))
-        if len(suffix_variants) != 1:
-            raise ValueError(
-                "</action> does not have one stable tokenization across admissible actions"
-            )
-        suffix_ids = list(next(iter(suffix_variants))) + [
-            self.hmm_model.eos_token_id
-        ]
-        max_body_tokens = max(len(ids) for ids in action_sequences.values())
+        suffix_ids = [self.hmm_model.eos_token_id]
 
         processor = ctrlg.ConstraintLogitsProcessor(
             self.hmm_model,
             dfa_model,
             self.cfg.min_action_tokens,
-            max_body_tokens,
+            self.cfg.max_action_tokens,
             prompt_ids,
             prefix_ids=prefix_ids,
             suffix_ids=suffix_ids,
@@ -507,7 +498,7 @@ class HFBackend(BaseBackend):
                     self.cfg.beam_size if not self.cfg.do_sample else 1
                 ),
                 min_new_tokens=self.cfg.min_action_tokens,
-                max_new_tokens=max_body_tokens,
+                max_new_tokens=self.cfg.max_action_tokens,
                 logits_processor=LogitsProcessorList([processor]),
                 pad_token_id=self.tokenizer.eos_token_id,
             )
@@ -521,37 +512,89 @@ class HFBackend(BaseBackend):
             self.model, candidates, prompt_ids, suffix_ids
         )
         selected_ids = tuple(candidates[0])
-        action_by_ids = {
-            tuple(ids): action for action, ids in action_sequences.items()
-        }
-        if selected_ids not in action_by_ids:
+        if not dfa_accepts(dfa_graph, selected_ids):
             decoded = self.tokenizer.decode(
                 selected_ids, skip_special_tokens=False
             )
             raise RuntimeError(
-                "Ctrl-G returned a token path outside the admissible action DFA: "
+                "Ctrl-G returned a token path outside the policy action DFA: "
                 f"{decoded!r}"
             )
-        emitted_tail_ids = selected_ids + tuple(suffix_ids[:-1])
         _synchronize_if_cuda(self.device)
         latency = time.perf_counter() - started
-        return action_by_ids[selected_ids], selected_ids, emitted_tail_ids, latency
+        text = self.tokenizer.decode(selected_ids, skip_special_tokens=False)
+        return GeneratedChunk(
+            text=text,
+            token_ids=selected_ids,
+            stop_found=text.endswith(ACTION_CLOSE),
+            truncated=not text.endswith(ACTION_CLOSE),
+            latency_seconds=latency,
+        )
+
+    def _strict_head(
+        self, prompt_text: str, skillset: SkillSet, task_key: str, *, greedy: bool
+    ) -> HeadGeneration:
+        temperature = None if greedy else self.cfg.rollout_temperature
+        thought = self._generate_until(
+            prompt_text, [THINK_CLOSE], self.cfg.max_thought_tokens, temperature
+        )
+        thought_text = thought.text + (THINK_CLOSE if not thought.stop_found else "")
+        decision_prompt = prompt_text + thought_text + DECISION_OPEN
+        cache_key = (
+            getattr(self.tokenizer, "name_or_path", type(self.tokenizer).__name__),
+            skillset.content_sha256, task_key, self.vocab_size,
+        )
+        if not hasattr(self, "_decision_dfa_cache"):
+            self._decision_dfa_cache = {}
+        graph = self._decision_dfa_cache.get(cache_key)
+        if graph is None:
+            pattern = decision_span_pattern(skillset.decision_schemas[task_key], skillset)
+            graph = lift_character_fsm(regex_fsm(pattern), self.tokenizer, self.vocab_size)
+            self._decision_dfa_cache[cache_key] = graph
+        decision = self._generate_dfa_span(
+            decision_prompt,
+            graph,
+            stop_string=DECISION_CLOSE,
+            max_new_tokens=self.cfg.max_decision_tokens,
+            sample=not greedy,
+        )
+        return self._assemble_head(thought, decision, use_decision=True)
 
     def generate_turn(
         self,
         prompt_text: str,
-        allowed_actions: list[str],
+        skillset: SkillSet,
+        task_key: str,
         *,
-        use_decision: bool,
-        use_hmm: bool,
+        constrained: bool,
         greedy_head: bool = True,
     ) -> TurnGeneration:
-        """Generate a native-think head, then a hard-constrained action."""
+        """Generate one fair control or schema/policy-constrained turn."""
 
-        head = self._generate_head(
-            prompt_text, use_decision=use_decision, greedy=greedy_head
-        )
+        if not constrained:
+            return self.generate_turn_unconstrained(
+                prompt_text, use_decision=True, greedy=greedy_head
+            )
+        head = self._strict_head(prompt_text, skillset, task_key, greedy=greedy_head)
         action_prompt = prompt_text + head.chunk.text
+
+        decision_fields = parse_decision(
+            parse_turn(head.chunk.text, "x</action>", use_decision=True).decision,
+            skillset.decision_schemas[task_key],
+            skillset,
+        )
+        policy = compile_policy_language(decision_fields, skillset)
+        if not hasattr(self, "_action_dfa_cache"):
+            self._action_dfa_cache = {}
+        policy_key = (
+            getattr(self.tokenizer, "name_or_path", type(self.tokenizer).__name__),
+            skillset.content_sha256, policy.required_action, policy.forbidden_action,
+            policy.take_type, policy.fallback_reason, self.vocab_size,
+        )
+        action_graph = self._action_dfa_cache.get(policy_key)
+        if action_graph is None:
+            action_graph = lift_character_fsm(policy.fsm, self.tokenizer, self.vocab_size)
+            self._action_dfa_cache[policy_key] = action_graph
 
         try:
             prefix_ids = hmm_prefix_token_ids(
@@ -564,50 +607,42 @@ class HFBackend(BaseBackend):
         # is therefore outside the HMM sequence, but a repaired decision close
         # makes the decision/action prefix synthetic and cannot be used.
         hmm_skip_reason = None
-        if use_hmm:
-            if head.used_decision_repair:
-                hmm_skip_reason = "synthetic_decision_close"
-            elif not prefix_ids:
-                hmm_skip_reason = "missing_exact_hmm_prefix"
-            elif (
-                self.cfg.max_hmm_prefix_tokens is not None
-                and len(prefix_ids) > self.cfg.max_hmm_prefix_tokens
-            ):
-                hmm_skip_reason = "hmm_prefix_too_long"
-        effective_hmm = use_hmm and hmm_skip_reason is None
+        if not prefix_ids:
+            hmm_skip_reason = "missing_exact_hmm_prefix"
+        elif (
+            self.cfg.max_hmm_prefix_tokens is not None
+            and len(prefix_ids) > self.cfg.max_hmm_prefix_tokens
+        ):
+            hmm_skip_reason = "hmm_prefix_too_long"
+        effective_hmm = hmm_skip_reason is None
         if effective_hmm:
-            action, action_ids, tail_ids, action_latency = self._generate_hmm_action(
-                action_prompt, allowed_actions, prefix_ids
-            )
-            raw_tail = action + ACTION_CLOSE
-            tail_stop_found = True
-            tail_truncated = False
-            tail_span_exact = True
+            action_chunk = self._generate_hmm_span(action_prompt, action_graph, prefix_ids)
         else:
-            action_chunk = self._generate_dfa_action(
-                action_prompt, allowed_actions
+            action_chunk = self._generate_dfa_span(
+                action_prompt,
+                action_graph,
+                stop_string=ACTION_CLOSE,
+                max_new_tokens=self.cfg.max_action_tokens,
+                sample=self.cfg.do_sample,
             )
-            action_latency = action_chunk.latency_seconds
-            raw_tail = action_chunk.text
-            tail_ids = action_chunk.token_ids
-            tail_stop_found = action_chunk.stop_found
-            tail_truncated = action_chunk.truncated
-            tail_span_exact = action_chunk.text.endswith(ACTION_CLOSE)
-            parsed_action = parse_turn(
-                head.chunk.text, raw_tail, use_decision=use_decision
-            ).action
-            action_ids = tuple(
-                tokenize_continuation(
-                    self.tokenizer, action_prompt, parsed_action
-                )
+        action_latency = action_chunk.latency_seconds
+        raw_tail = action_chunk.text
+        tail_ids = action_chunk.token_ids
+        tail_stop_found = action_chunk.stop_found
+        tail_truncated = action_chunk.truncated
+        tail_span_exact = action_chunk.text.endswith(ACTION_CLOSE)
+        try:
+            action_ids, _ = exact_action_tail_token_ids(
+                self.tokenizer, list(tail_ids), raw_tail
             )
+        except ValueError:
+            action_ids = []
 
-        parsed = parse_turn(
-            head.chunk.text, raw_tail, use_decision=use_decision
-        )
-        if parsed.action not in allowed_actions:
+        parsed = parse_turn(head.chunk.text, raw_tail, use_decision=True)
+        if not policy.fsm.accepts(raw_tail):
             raise RuntimeError(
-                f"hard DFA emitted non-admissible action {parsed.action!r}"
+                "token DFA output does not decode to the compiled policy language: "
+                f"{raw_tail!r}"
             )
         return TurnGeneration(
             parsed=parsed,
@@ -651,7 +686,44 @@ class HFBackend(BaseBackend):
             ),
             used_thought_repair=head.used_thought_repair,
             used_decision_repair=head.used_decision_repair,
+            decision_schema_valid=True,
+            decision_fields=decision_fields,
+            action_grammar_valid=action_grammar_valid(parsed.action, skillset),
+            activated_policies=policy.activated,
+            shadowed_policies=policy.shadowed,
+            policy_evaluable=policy.evaluable,
+            policy_satisfied=policy_satisfied(parsed.action, policy),
+            policy_fallback_reason=policy.fallback_reason,
         )
+
+    def generate_turns_training(
+        self,
+        prompt_text: str,
+        skillset: SkillSet,
+        task_key: str,
+        *,
+        count: int,
+        seed_context: tuple[int, ...] = (),
+    ) -> list[TurnGeneration]:
+        """Hard-schema decisions followed by unconstrained sampled actions."""
+
+        turns = []
+        for _ in range(count):
+            head = self._strict_head(prompt_text, skillset, task_key, greedy=True)
+            tail = self._generate_until(
+                prompt_text + head.chunk.text,
+                [ACTION_CLOSE],
+                self.cfg.max_action_tokens,
+                self.cfg.rollout_temperature,
+            )
+            turn = self._assemble_unconstrained_turn(head, tail, use_decision=True)
+            fields = parse_decision(
+                turn.parsed.decision, skillset.decision_schemas[task_key], skillset
+            )
+            turns.append(TurnGeneration(
+                **{**turn.__dict__, "decision_schema_valid": True, "decision_fields": fields}
+            ))
+        return turns
 
 
 class VLLMBackend(BaseBackend):
@@ -668,6 +740,7 @@ class VLLMBackend(BaseBackend):
         gen_config: GenConfig | None = None,
     ):
         from openai import OpenAI
+        from transformers import AutoTokenizer
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path or model)
         self.client = OpenAI(
@@ -705,9 +778,18 @@ class VLLMBackend(BaseBackend):
         temperature: float | None = None,
         *,
         seed: int | None = None,
+        guided_regex: str | None = None,
     ) -> GeneratedChunk:
         started = time.perf_counter()
         request_seed = self.cfg.seed if seed is None else seed
+        extra_body = {
+            "include_stop_str_in_output": True,
+            "return_token_ids": True,
+            "seed": request_seed,
+            "skip_special_tokens": False,
+        }
+        if guided_regex is not None:
+            extra_body["guided_regex"] = guided_regex
         response = self.client.completions.create(
             model=self.model,
             prompt=prompt_text,
@@ -716,12 +798,7 @@ class VLLMBackend(BaseBackend):
                 temperature if temperature is not None and temperature > 0 else 0.0
             ),
             stop=list(stop_strings),
-            extra_body={
-                "include_stop_str_in_output": True,
-                "return_token_ids": True,
-                "seed": request_seed,
-                "skip_special_tokens": False,
-            },
+            extra_body=extra_body,
         )
         latency = time.perf_counter() - started
         choice = response.choices[0]
@@ -767,6 +844,7 @@ class VLLMBackend(BaseBackend):
         max_new_tokens: int,
         temperature: float | None,
         seeds: list[int],
+        guided_regex: str | None = None,
     ) -> list[GeneratedChunk]:
         """Submit one concurrent phase and return results in input order.
 
@@ -788,6 +866,7 @@ class VLLMBackend(BaseBackend):
                 max_new_tokens,
                 temperature,
                 seed=request_seed,
+                guided_regex=guided_regex,
             )
 
         with ThreadPoolExecutor(max_workers=len(prompt_texts)) as executor:
@@ -887,3 +966,68 @@ class VLLMBackend(BaseBackend):
                 action_seeds,
             )
         ]
+
+    def generate_turns_training(
+        self,
+        prompt_text: str,
+        skillset: SkillSet,
+        task_key: str,
+        *,
+        count: int,
+        seed_context: tuple[int, ...] = (),
+    ) -> list[TurnGeneration]:
+        """Collect the evaluator-matched hard-decision distribution on vLLM."""
+
+        if count < 1:
+            raise ValueError("count must be at least one")
+        head_temperature = None
+        action_temperature = self.cfg.rollout_temperature
+        thought_seeds = [
+            self._stable_seed(self.cfg.seed, seed_context, index, "thought")
+            for index in range(count)
+        ]
+        decision_seeds = [
+            self._stable_seed(self.cfg.seed, seed_context, index, "decision")
+            for index in range(count)
+        ]
+        action_seeds = [
+            self._stable_seed(self.cfg.seed, seed_context, index, "action")
+            for index in range(count)
+        ]
+        thoughts = self._generate_batch_until(
+            [prompt_text] * count, [THINK_CLOSE], self.cfg.max_thought_tokens,
+            head_temperature, thought_seeds,
+        )
+        decision_prompts = [
+            prompt_text + thought.text
+            + (THINK_CLOSE if not thought.stop_found else "") + DECISION_OPEN
+            for thought in thoughts
+        ]
+        pattern = decision_span_pattern(skillset.decision_schemas[task_key], skillset)
+        decisions = self._generate_batch_until(
+            decision_prompts, [DECISION_CLOSE], self.cfg.max_decision_tokens,
+            head_temperature, decision_seeds, guided_regex=pattern,
+        )
+        heads = [
+            self._assemble_head(thought, decision, use_decision=True)
+            for thought, decision in zip(thoughts, decisions)
+        ]
+        tails = self._generate_batch_until(
+            [prompt_text + head.chunk.text for head in heads],
+            [ACTION_CLOSE], self.cfg.max_action_tokens, action_temperature, action_seeds,
+        )
+        turns = []
+        for head, tail, thought_seed, decision_seed, action_seed in zip(
+            heads, tails, thought_seeds, decision_seeds, action_seeds
+        ):
+            turn = self._assemble_unconstrained_turn(
+                head, tail, use_decision=True, head_seed=thought_seed,
+                decision_seed=decision_seed, tail_seed=action_seed,
+            )
+            fields = parse_decision(
+                turn.parsed.decision, skillset.decision_schemas[task_key], skillset
+            )
+            turns.append(TurnGeneration(
+                **{**turn.__dict__, "decision_schema_valid": True, "decision_fields": fields}
+            ))
+        return turns

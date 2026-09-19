@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 import torch
-import transformers
 
 
 def file_sha256(path: str | Path) -> str:
@@ -86,6 +85,8 @@ def git_revision(repository: str | Path) -> str | None:
 
 
 def runtime_versions() -> dict[str, str]:
+    import transformers
+
     return {
         "python": platform.python_version(),
         "torch": torch.__version__,

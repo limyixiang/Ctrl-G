@@ -109,6 +109,14 @@ class TurnGeneration:
     decision_truncated: bool = False
     used_thought_repair: bool = False
     used_decision_repair: bool = False
+    decision_schema_valid: bool = False
+    decision_fields: dict = field(default_factory=dict)
+    action_grammar_valid: bool = False
+    activated_policies: tuple[str, ...] = ()
+    shadowed_policies: tuple[str, ...] = ()
+    policy_evaluable: bool = False
+    policy_satisfied: bool | None = None
+    policy_fallback_reason: str | None = None
 
     @property
     def total_generated_tokens(self) -> int:

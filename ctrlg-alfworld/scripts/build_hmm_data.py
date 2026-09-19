@@ -102,7 +102,17 @@ def main():
     records = [item for item in all_eligible if bool(item["use_decision"])]
     if not records:
         raise ValueError("no eligible decision-format records")
-    show_admissible_actions = validate_prompt_regime(records)
+    collection_regime = validate_prompt_regime(records)
+    if args.tokenizer != collection_regime["tokenizer"]:
+        raise ValueError(
+            "--tokenizer does not match collection provenance: "
+            f"{args.tokenizer!r} != {collection_regime['tokenizer']!r}"
+        )
+    if args.model is not None and args.model != collection_regime["model"]:
+        raise ValueError(
+            "--model does not match collection provenance: "
+            f"{args.model!r} != {collection_regime['model']!r}"
+        )
     validate_tokenizer_contract(tokenizer, records)
     train_records, dev_records = split_records(
         records, dev_fraction=args.dev_fraction, seed=args.seed
@@ -170,8 +180,9 @@ def main():
             "executed_sample_only" if args.selected_only else "all_eligible"
         ),
         "dataset": args.dataset,
-        "prompt_format": "decision_with_persistent_history",
-        "show_admissible_actions": show_admissible_actions,
+        **collection_regime,
+        "no_oracle_filtering": True,
+        "skills_sha256": records[0].get("skills_sha256"),
         "eligible_records_in_source": len(all_eligible),
         "eligible_decision_records": len(records),
         "ignored_non_decision_records": len(all_eligible) - len(records),
@@ -184,8 +195,8 @@ def main():
         "sequence_length": sequence_length,
         "eos_token_id": tokenizer.eos_token_id,
         "save_embeddings": args.save_embeddings,
-        "model": args.model,
-        "tokenizer": args.tokenizer,
+        "model": collection_regime["model"],
+        "tokenizer": collection_regime["tokenizer"],
         "seed": args.seed,
         "split_policy": "state-group train/dev split",
         "git_revision": git_revision(Path(__file__).resolve().parents[2]),

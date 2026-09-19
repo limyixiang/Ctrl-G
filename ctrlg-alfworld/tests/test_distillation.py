@@ -24,7 +24,14 @@ def make_record(use_decision, marker):
     eos = 0
     return {
         "use_decision": use_decision,
-        "show_admissible_actions": False,
+        "schema_version": 1,
+        "policy_version": 1,
+        "constrained_decision_collection": True,
+        "no_oracle_filtering": True,
+        "skills_sha256": "skills",
+        "model": "model",
+        "tokenizer": "model",
+        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
         "prompt_token_ids": [1, 2],
         "head_token_ids": [3, 4] + prefix,
         "hmm_prefix_token_ids": prefix,
@@ -191,18 +198,19 @@ class DistillationDataTests(unittest.TestCase):
                     selected_actions={(0, 0, 1): "look"},
                 )
 
-    def test_selected_only_rejects_inadmissible_selected_sample(self):
+    def test_selected_only_keeps_inadmissible_selected_sample(self):
         sample = make_rollout_record(
             episode=0, step=0, sample=0, action="look", marker=11
         )
         sample["action_was_admissible"] = False
         with tempfile.TemporaryDirectory() as directory:
             samples_path = write_jsonl(directory, "samples.jsonl", [sample])
-            with self.assertRaisesRegex(ValueError, "is not admissible"):
-                load_eligible_records(
-                    samples_path,
-                    selected_actions={(0, 0, 0): "look"},
-                )
+            records = load_eligible_records(
+                samples_path,
+                selected_actions={(0, 0, 0): "look"},
+            )
+            self.assertEqual(len(records), 1)
+            self.assertFalse(records[0]["action_was_admissible"])
 
     def test_validate_record_enforces_generated_prefix_alignment(self):
         record = make_record(False, 11)
@@ -259,18 +267,19 @@ class DistillationDataTests(unittest.TestCase):
         self.assertFalse(train_states & dev_states)
         self.assertEqual(len(dev), 2)
 
-    def test_prompt_regime_must_be_uniform(self):
+    def test_collection_regime_must_be_uniform(self):
         records = [make_record(True, 11), make_record(True, 12)]
-        self.assertFalse(validate_prompt_regime(records))
-        records[1]["show_admissible_actions"] = True
-        with self.assertRaisesRegex(ValueError, "cannot mix samples"):
+        self.assertTrue(validate_prompt_regime(records)["no_oracle_filtering"])
+        records[1]["policy_version"] = 2
+        with self.assertRaisesRegex(ValueError, "policy_version"):
             validate_prompt_regime(records)
 
-    def test_legacy_records_default_to_hidden_prompt_regime(self):
+    def test_missing_collection_provenance_is_rejected(self):
         record = make_record(True, 11)
-        del record["show_admissible_actions"]
+        del record["no_oracle_filtering"]
         validate_record(record)
-        self.assertFalse(validate_prompt_regime([record]))
+        with self.assertRaisesRegex(ValueError, "no_oracle_filtering"):
+            validate_prompt_regime([record])
 
     def test_padding_uses_hmm_eos(self):
         records = [make_record(False, 11), make_record(True, 12)]

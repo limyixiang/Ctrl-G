@@ -1,216 +1,143 @@
-# Ctrl-G–ALFWorld matched two-condition experiment
+# Ctrl-G on ALFWorld
 
-This package answers one question:
+This package evaluates one matched pair using the same model prompt, complete
+trajectory, and byte-identical `templates/SKILLS.md`:
 
-> Within the same persistent-decision-memory agent, what is the effect of
-> adding a matched Ctrl-G HMM to the hard admissible-action DFA?
+| Condition | Decision | Action |
+|---|---|---|
+| `decision_prompt` | unconstrained | unconstrained |
+| `decision_ctrlg` | hard schema DFA | policy DFA + action HMM |
 
-| Condition | Persistent decision memory | Decoder |
-|---|---:|---|
-| `decision_dfa` | yes | hard DFA |
-| `decision_dfa_hmm` | yes | hard DFA + decision-format HMM |
+`info["admissible_commands"]` is never passed to either decoder and is never
+shown in the prompt. It is retained only as `admissible_gt` after generation,
+to score `action_was_admissible`. There is no symbolic state tracker and no
+fact extraction from observations or prompt text.
 
-Both conditions generate a `<decision>...</decision>` before each action and
-replay each nonempty prior decision immediately before its corresponding prior
-`<action>...</action>` and observation. Native/hidden thinking is never
-replayed. Prompts, DFA, base model, generation settings, seed, and ordered
-episode manifest are held fixed; only HMM use changes. This experiment does not
-estimate whether adding decision blocks improves performance.
+## Skill contract
 
-Every DFA is constructed directly from the current TextWorld
-`info["admissible_commands"]`. The admissible list is hidden from the model by
-default. A matched prompt-visible experiment can be enabled explicitly during
-both sample collection and evaluation. No symbolic `state.py` tracker is used.
+`SKILLS.md` contains three fenced YAML block types:
 
-## Distillation boundary
+- `action`: named action templates.
+- `decision-schema`: versioned ordered schemas for the six ALFWorld task types.
+- `policy`: versioned declarative conditions and effects.
 
-The HMM is trained only on matching persistent-decision-format rollouts:
+Loading fails on malformed YAML, duplicate names, unknown action templates,
+unsupported schema types/operators, invalid bounds, or unsupported effects.
+Both conditions receive the raw skill file; only `decision_ctrlg` compiles its
+machine-readable blocks.
+
+Decisions are canonical one-line flow-style YAML. The schemas retain the task
+fields and search ledger, require exactly two independent `targets` records for
+`puttwo`, and add:
 
 ```text
-base-LLM-only context: system + user prompt + native thinking
-HMM prefix:           generated post-think text through <action>
-DFA span:             action body
-HMM suffix:           </action> + EOS
+previous_action: ACTION | none | unknown
+arrived_receptacle_state: open | closed | not_applicable | unknown
+held_relation: none | target | non_target | unknown
 ```
 
-Original token IDs are retained. Malformed decision/action spans, truncated or
-repaired decisions, truncated actions, and non-token-aligned samples are logged
-but excluded, as are actions outside the current TextWorld admissible set. A
-truncated native thought is allowed because it lies outside the HMM sequence.
-The state-group train/dev split keeps all samples from one `(episode, step)` on
-the same side of the split.
+These values are model claims. They are not checked against the real
+trajectory. Search-ledger syntax is guaranteed in `decision_ctrlg`; factual
+correctness, overlap, and revisit tracking are not.
 
-## 1. Collect decision-format samples
+The initial policy set is:
+
+1. Priority 100: declared closed arrival at an entity requires `open {at}`.
+2. Priority 90: declared non-target held object requires `move {held} to {at}`.
+3. Priority 20: every generated `take` uses the lexical type in `target_type`.
+   Thus `cup` and `mug` remain distinct, although object presence is not known.
+4. Priority 10: the action cannot exactly equal declared `previous_action`,
+   except `none` and `unknown`.
+
+The highest-priority matching required-action rule shadows lower-priority
+rules. Otherwise restrictions intersect. An unbound or empty language falls
+back to the generic action grammar and records `policy_fallback_reason`; it
+never falls back to environment admissible commands.
+
+## Generation
+
+Strict generation has five phases:
+
+1. Native thought generation.
+2. Decision body plus `</decision>` under a hard tokenizer DFA.
+3. Guaranteed-valid YAML parsing.
+4. Per-turn policy-language compilation from declared fields.
+5. Action body plus `</action>` under the policy DFA and action HMM.
+
+The default decision/action caps are 512/32 tokens. Both closing tags are
+inside their DFA spans; the action HMM has EOS as its fixed suffix. The hard
+logits processor tracks DFA state and masks paths that cannot reach acceptance
+within the remaining budget.
+
+## HMM data collection
+
+Training samples match the strict evaluator's prefix distribution: a hard-DFA
+decision is followed by an unconstrained sampled action. Both the in-process HF
+backend and vLLM 0.10.2 are supported; vLLM receives the decision language as
+`guided_regex`.
 
 ```bash
-export ALFWORLD_DATA=/path/to/alfworld_data
-python ctrlg-alfworld/scripts/smoke_environment.py
-
 python ctrlg-alfworld/scripts/run_rollouts.py \
   --backend vllm \
   --model Qwen/Qwen3.5-9B \
+  --tokenizer Qwen/Qwen3.5-9B \
   --num_episodes 100 \
-  --temperature 0.7 \
-  --out out/alfworld_hmm_samples
+  --max_decision_tokens 512 \
+  --max_action_tokens 32 \
+  --max_hmm_sequence_tokens 640 \
+  --out results/alfworld/9b_policy_hmm
 ```
 
-Add `--show_admissible_actions` to collect a separate prompt-visible dataset.
-The setting is written to every sample and to collection metadata; the dataset
-builder rejects mixtures of prompt-hidden and prompt-visible samples.
-Collection refuses to replace an existing `samples.jsonl`, `episodes.jsonl`,
-`history.jsonl`, or `metadata.json`; choose a new output directory or pass
-`--overwrite` explicitly. The Slurm launcher exposes the latter as
-`OVERWRITE=1`.
-For a collection that exceeded its wall clock, resubmit the same episode target
-and output directory with `RESUME=1`:
+Every structurally valid, token-exact sample is eligible regardless of action
+admissibility. Dataset/checkpoint metadata records the skill hash, schema and
+policy versions, model/tokenizer, hard-decision collection regime, and
+no-oracle filtering flag.
 
-```bash
-RESUME=1 EPISODES=3553 OUTPUT=results/alfworld/actions_hidden/hmm_samples \
-  sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
-```
-
-`history.jsonl` is an audit artifact and is not used for HMM training. It
-contains one record per completed episode. Each step records every sampled
-model decision/action attempt, the selected nonempty attempt, and the action
-actually executed; model thoughts are not logged. Resume validates all
-generation settings, environment
-game ordering, and the config and skills hashes. It reconciles samples,
-episode summaries, and histories to their common durable episode boundary,
-then appends from the next episode. It is supported for the vLLM backend with
-environment domain randomization disabled. Never set
-`RESUME=1` and `OVERWRITE=1` together, and do not run two collectors against
-the same output directory.
-Each episode also records an `advance_trace` linking every executed action to
-the sampled attempt that produced it.
-
-Only decision-format samples are collected. The metadata reports completed and
-successful episode counts, rollout success rate, eligible-sample counts, and
-exclusion reasons. The same cumulative success count and rate are printed after
-each completed episode. The vLLM backend requires exact returned token IDs and
-fails rather than retokenizing generated text.
-
-For each environment state, collection samples one thought, decision, and
-action. It resamples the full turn only when the extracted action is empty.
-Thought, decision, and action generation have independent limits of 1024, 64,
-and 24 tokens. Fixed delimiters guarantee that a long native thought cannot
-consume the decision allowance. A synthetic decision close excludes the sample
-from distillation; a synthetic thought close does not, because native thinking
-is outside the HMM sequence.
-The first nonempty sampled action is executed and recorded truthfully even when
-it is not admissible, allowing the next prompt to include the environment's
-rejection rather than a synthetic `look`. Inadmissible samples are excluded
-from distillation. vLLM seeds are derived from the base seed, episode, step,
-retry index, fixed singleton-candidate index, and phase.
-
-## 2. Build one HMM dataset
+Prepare Ctrl-G data with:
 
 ```bash
 python ctrlg-alfworld/scripts/build_hmm_data.py \
-  --samples out/alfworld_hmm_samples/samples.jsonl \
+  --samples results/alfworld/9b_policy_hmm/samples.jsonl \
   --tokenizer Qwen/Qwen3.5-9B \
-  --model Qwen/Qwen3.5-9B \
-  --output_dir out/alfworld_hmm_data \
-  --dataset alfworld_actions \
-  --save_embeddings
+  --output_dir distillation/alfworld
 ```
 
-This produces `alfworld_actions.lvd`, `.lvd.embeddings`, `.train.*`, `.dev`,
-and `.metadata.json` for the one matched HMM.
+## Evaluation
 
-By default, every structurally eligible candidate is included. To build an
-on-policy dataset containing only the sampled candidate that actually advanced
-each environment state, add the matching episode trace:
-
-```bash
-python ctrlg-alfworld/scripts/build_hmm_data.py \
-  --samples out/alfworld_hmm_samples/samples.jsonl \
-  --episodes out/alfworld_hmm_samples/episodes.jsonl \
-  --selected_only \
-  --tokenizer Qwen/Qwen3.5-9B \
-  --model Qwen/Qwen3.5-9B \
-  --output_dir out/alfworld_hmm_data_selected \
-  --dataset alfworld_actions_selected \
-  --save_embeddings
-```
-
-Selected-only construction verifies the `(episode, step, sample)` reference,
-the executed action text, parsing, and admissibility. Deterministic fallback
-steps and selected samples that are not distillation-eligible are reported in
-metadata but do not contribute training records. The original four-candidate
-rollout artifacts remain unchanged and can still build the all-eligible
-dataset.
-
-## 3. Train the matched HMM
-
-```bash
-DATA_DIR=out/alfworld_hmm_data \
-OUTPUT=out/alfworld_hmm_model \
-sbatch ctrlg-alfworld/slurm/train_hmm.sh
-```
-
-The output includes `train.log`, checkpoints, and `held_out_fit.json` for the
-decision-format dev set. LVD and EM initialization use the configured seed.
-
-## 4. Run the matched evaluation pair
-
-```bash
-HMM=out/alfworld_hmm_model/checkpoint-400 \
-sbatch ctrlg-alfworld/slurm/eval_grid.sh
-```
-
-Or run the HMM condition directly:
+Run both cells with the same model, skills, seed, split, and episode manifest:
 
 ```bash
 python ctrlg-alfworld/scripts/run_eval.py \
   --model Qwen/Qwen3.5-9B \
-  --hmm out/alfworld_hmm_model/checkpoint-400 \
-  --condition decision_dfa_hmm \
-  --num_episodes 134 \
-  --seed 42 \
-  --out out/alfworld_pair
-```
+  --condition decision_prompt \
+  --out results/alfworld/pair
 
-Omit `--hmm` for `decision_dfa`. After both runs:
+python ctrlg-alfworld/scripts/run_eval.py \
+  --model Qwen/Qwen3.5-9B \
+  --condition decision_ctrlg \
+  --hmm distillation/alfworld/checkpoint \
+  --out results/alfworld/pair
 
-```bash
 python ctrlg-alfworld/scripts/summarize_results.py \
-  --results out/alfworld_pair \
-  --out out/alfworld_pair/effects.json
+  --results results/alfworld/pair
 ```
 
-The summarizer rejects differences in prompt/generation settings, source hash,
-seed, ordered episode manifest, or other paired controls. It reports
-`decision_dfa_hmm - decision_dfa` for every metric.
+The paired summary reports Ctrl-G minus prompt-only deltas for success,
+post-hoc admissibility, decision-schema validity, action-grammar validity,
+policy adherence/fallback, latency, and tokens. Step records include parsed
+decision fields, activated/shadowed rules, evaluability/satisfaction, HMM
+application/skip reason, and post-hoc admissibility. Summaries reject mismatched
+model, prompt settings, skills, episode manifest, policy version, or HMM
+provenance.
 
-### Prompt-visible matched experiment
-
-Train a separate HMM from samples collected with
-`--show_admissible_actions`, then pass the same flag to both evaluation cells.
-The Slurm launchers expose this as an environment toggle:
+## Tests
 
 ```bash
-SHOW_ADMISSIBLE_ACTIONS=1 \
-OUTPUT=results/alfworld/actions_shown/hmm_samples \
-sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
-
-SHOW_ADMISSIBLE_ACTIONS=1 \
-HMM=results/alfworld/actions_shown/hmm_model/checkpoint-N \
-OUTPUT=results/alfworld/actions_shown/eval \
-sbatch ctrlg-alfworld/slurm/eval_grid.sh
+pytest -q ctrlg-alfworld/tests
 ```
 
-Keep prompt-hidden and prompt-visible samples, HMM checkpoints, and evaluation
-outputs in separate directories. New locally trained checkpoints carry dataset
-metadata, and evaluation rejects a checkpoint whose prompt regime conflicts
-with the requested flag. Legacy checkpoints without this metadata remain
-supported.
-
-## Focused tests
-
-```bash
-cd ctrlg-alfworld
-PYTHONPATH=src ../.venv/bin/python -m unittest \
-  tests.test_experiment tests.test_eval_routing tests.test_prompts \
-  tests.test_distillation tests.test_summarize_results tests.test_agent_loop \
-  tests.test_rollout_collection
-```
+The CPU suite covers DSL rejection, all six schemas, exact two-target
+`puttwo` decisions including shared locations, character/token DFA behavior,
+closing tags, token-budget completion, policy priority and fallback, cup/mug
+separation, prompt identity, no-oracle decoder routing, collection eligibility,
+vLLM guided regex, and paired-summary provenance.

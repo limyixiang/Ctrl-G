@@ -26,15 +26,10 @@ MODEL=${MODEL:-$WORKDIR/models/Qwen3.5-9B}
 OUTPUT=${OUTPUT:-results/alfworld/pair_${SLURM_ARRAY_JOB_ID}}
 EPISODES=${EPISODES:-134}
 SEED=${SEED:-42}
-CONDITIONS=(decision_dfa decision_dfa_hmm)
+CONDITIONS=(decision_prompt decision_ctrlg)
 CONDITION=${CONDITIONS[$SLURM_ARRAY_TASK_ID]}
-PROMPT_ARGS=()
-if [[ "${SHOW_ADMISSIBLE_ACTIONS:-0}" == "1" ]]; then
-  PROMPT_ARGS+=(--show_admissible_actions)
-fi
-
 HMM_ARGS=()
-if [[ "$CONDITION" == "decision_dfa_hmm" ]]; then
+if [[ "$CONDITION" == "decision_ctrlg" ]]; then
   : "${HMM:?Set HMM to the matched decision-format checkpoint directory}"
   HMM_ARGS=(--hmm "$HMM")
 fi
@@ -43,7 +38,6 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --model "$MODEL" \
   --condition "$CONDITION" \
   "${HMM_ARGS[@]}" \
-  "${PROMPT_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --seed "$SEED" \
   --out "$OUTPUT"

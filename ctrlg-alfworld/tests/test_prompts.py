@@ -4,94 +4,44 @@ from ctrlg_alfworld.prompts import Step, build_user_prompt
 
 
 class PromptTests(unittest.TestCase):
-    def make_prompt(self, *, use_decision, show_actions=False, history=None):
+    def make_prompt(self, history=None):
         return build_user_prompt(
             skill_content="Keep searching systematically.",
             task_description="put a mug on shelf 1",
             initial_observation="You are in a kitchen.",
             current_observation="You see a countertop 1.",
             obs_history=history or [],
-            use_decision=use_decision,
-            admissible_actions=["look", "go to countertop 1"],
-            show_admissible_actions=show_actions,
+            use_decision=True,
         )
 
-    def test_initial_prompt_contains_task(self):
-        prompt = self.make_prompt(use_decision=False)
+    def test_initial_prompt_contains_task_and_no_oracle_list(self):
+        prompt = self.make_prompt()
         self.assertIn("put a mug on shelf 1", prompt)
-
-    def test_history_starts_with_initial_observation(self):
-        history = [
-            Step(
-                thought="private native reasoning",
-                action="look",
-                observation="You see a shelf 1.",
-            )
-        ]
-        prompt = self.make_prompt(use_decision=False, history=history)
-        initial_observation = (
-            "Your initial observation was: You are in a kitchen."
-        )
-        first_action = "Step 1: look"
-        self.assertIn(initial_observation, prompt)
-        self.assertLess(prompt.index(initial_observation), prompt.index(first_action))
-
-    def test_core_prompt_does_not_leak_admissible_list(self):
-        prompt = self.make_prompt(use_decision=False)
-        self.assertNotIn("go to countertop 1", prompt)
         self.assertNotIn("Your admissible actions", prompt)
 
-    def test_prompt_list_requires_explicit_control_flag(self):
-        prompt = self.make_prompt(use_decision=False, show_actions=True)
-        self.assertIn("go to countertop 1", prompt)
-        self.assertIn("[go to countertop 1, look]", prompt)
+    def test_history_starts_with_initial_observation(self):
+        history = [Step(thought="private", action="look", observation="You see a shelf 1.")]
+        prompt = self.make_prompt(history)
+        self.assertLess(prompt.index("Your initial observation was"), prompt.index("Step 1: look"))
+        self.assertNotIn("private", prompt)
 
-    def test_native_thinking_is_not_requested_as_manual_tag(self):
-        prompt = self.make_prompt(use_decision=False)
-        self.assertNotIn("<think>", prompt)
-        self.assertNotIn("</think>", prompt)
+    def test_condition_flag_does_not_change_prompt_bytes(self):
+        arguments = dict(
+            skill_content="raw skill bytes", task_description="find cup",
+            initial_observation="room", current_observation="room", obs_history=[]
+        )
+        baseline = build_user_prompt(**arguments, use_decision=True)
+        treatment = build_user_prompt(**arguments, use_decision=True)
+        self.assertEqual(baseline.encode(), treatment.encode())
 
-    def test_decision_factor_changes_output_contract(self):
-        without = self.make_prompt(use_decision=False)
-        with_decision = self.make_prompt(use_decision=True)
-        self.assertNotIn("<decision>", without)
-        self.assertIn("<decision>", with_decision)
-
-    def test_decision_history_replays_decision_before_matching_action_and_observation(self):
-        history = [
-            Step(
-                thought="private native reasoning",
-                decision="search elsewhere",
-                action="look",
-                observation="You see a shelf 1.",
+    def test_admissible_parameters_are_not_accepted(self):
+        with self.assertRaises(TypeError):
+            build_user_prompt(
+                skill_content="x", task_description="x", initial_observation="x",
+                current_observation="x", obs_history=[], use_decision=True,
+                admissible_actions=["look"],
             )
-        ]
-        prompt = self.make_prompt(use_decision=True, history=history)
-        decision = "<decision>search elsewhere</decision>"
-        action = "<action>look</action>"
-        observation = "OBS: You see a shelf 1."
-        self.assertLess(prompt.index(decision), prompt.index(action))
-        self.assertLess(prompt.index(action), prompt.index(observation))
-        self.assertNotIn("private native reasoning", prompt)
 
-    def test_generic_action_only_history_remains_action_observation_only(self):
-        history = [
-            Step(
-                thought="private native reasoning",
-                decision="search elsewhere",
-                action="look",
-                observation="You see a shelf 1.",
-            )
-        ]
-        prompt = self.make_prompt(use_decision=False, history=history)
-        self.assertNotIn("search elsewhere", prompt)
-        self.assertNotIn("<decision>", prompt)
-        self.assertIn("<action>look</action>\nOBS: You see a shelf 1.", prompt)
-        self.assertNotIn("private native reasoning", prompt)
 
-    def test_empty_prior_decision_is_not_replayed(self):
-        history = [Step(thought="hidden", decision="  ", action="look", observation="Room.")]
-        prompt = self.make_prompt(use_decision=True, history=history)
-        # The current-turn output instruction contains one opening tag; an
-        # empty history entry must not add another one.
-        self.assertEqual(prompt.count("<decision>"), 1)
+if __name__ == "__main__":
+    unittest.main()

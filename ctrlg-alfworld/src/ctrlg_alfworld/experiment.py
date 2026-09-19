@@ -7,8 +7,8 @@ from enum import Enum
 
 
 class ConditionName(str, Enum):
-    DECISION_DFA = "decision_dfa"
-    DECISION_DFA_HMM = "decision_dfa_hmm"
+    DECISION_PROMPT = "decision_prompt"
+    DECISION_CTRLG = "decision_ctrlg"
 
 
 @dataclass(frozen=True)
@@ -16,15 +16,19 @@ class ExperimentCondition:
     name: ConditionName
     use_hmm: bool
     use_decision: bool = True
-    use_dfa: bool = True
+    use_decision_dfa: bool = False
+    use_action_dfa: bool = False
 
 
 CONDITIONS: dict[ConditionName, ExperimentCondition] = {
-    ConditionName.DECISION_DFA: ExperimentCondition(
-        ConditionName.DECISION_DFA, use_hmm=False
+    ConditionName.DECISION_PROMPT: ExperimentCondition(
+        ConditionName.DECISION_PROMPT, use_hmm=False
     ),
-    ConditionName.DECISION_DFA_HMM: ExperimentCondition(
-        ConditionName.DECISION_DFA_HMM, use_hmm=True
+    ConditionName.DECISION_CTRLG: ExperimentCondition(
+        ConditionName.DECISION_CTRLG,
+        use_hmm=True,
+        use_decision_dfa=True,
+        use_action_dfa=True,
     ),
 }
 

@@ -49,7 +49,10 @@ RESUME_COMPATIBILITY_FIELDS = (
     "num_episodes",
     "sampling_policy",
     "prompt_format",
-    "show_admissible_actions",
+    "schema_version",
+    "policy_version",
+    "no_oracle_filtering",
+    "constrained_decision_collection",
     "max_steps",
     "max_thought_tokens",
     "max_decision_tokens",
@@ -526,7 +529,6 @@ def select_advance_turn(sampled_turns):
 def distill_exclusion_reasons(
     turn,
     hmm_sequence,
-    admissible_actions,
     *,
     max_hmm_prefix_tokens,
     max_hmm_sequence_tokens,
@@ -548,8 +550,6 @@ def distill_exclusion_reasons(
         reasons.append("synthetic_decision_close")
     if turn.decision_truncated:
         reasons.append("decision_truncated")
-    if turn.parsed.action not in admissible_actions:
-        reasons.append("inadmissible_action")
     if turn.tail_truncated:
         reasons.append("tail_truncated")
     if not turn.tail_span_exact:
@@ -573,14 +573,6 @@ def main():
     parser.add_argument("--config", default=str(ROOT / "configs/config_tw.yaml"))
     parser.add_argument("--skills", default=str(ROOT / "templates/SKILLS.md"))
     parser.add_argument(
-        "--show_admissible_actions",
-        action="store_true",
-        help=(
-            "Include the current admissible commands in the model-visible prompt. "
-            "Disabled by default and must match evaluation."
-        ),
-    )
-    parser.add_argument(
         "--split",
         default="train",
         choices=["train", "eval_in_distribution", "eval_out_of_distribution"],
@@ -588,11 +580,11 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=100)
     parser.add_argument("--max_steps", type=int, default=50)
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
-    parser.add_argument("--max_decision_tokens", type=int, default=64)
-    parser.add_argument("--max_action_tokens", type=int, default=24)
+    parser.add_argument("--max_decision_tokens", type=int, default=512)
+    parser.add_argument("--max_action_tokens", type=int, default=32)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--max_hmm_prefix_tokens", type=int, default=None)
-    parser.add_argument("--max_hmm_sequence_tokens", type=int, default=128)
+    parser.add_argument("--max_hmm_sequence_tokens", type=int, default=640)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -688,8 +680,11 @@ def main():
         "split": args.split,
         "num_episodes": args.num_episodes,
         "sampling_policy": "single_trajectory_resample_empty_action",
-        "prompt_format": "decision_with_persistent_history",
-        "show_admissible_actions": args.show_admissible_actions,
+        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+        "schema_version": skillset.schema_version,
+        "policy_version": skillset.policy_version,
+        "no_oracle_filtering": True,
+        "constrained_decision_collection": True,
         "max_steps": args.max_steps,
         "max_thought_tokens": args.max_thought_tokens,
         "max_decision_tokens": args.max_decision_tokens,
@@ -698,7 +693,7 @@ def main():
         "max_hmm_prefix_tokens": args.max_hmm_prefix_tokens,
         "max_hmm_sequence_tokens": args.max_hmm_sequence_tokens,
         "seed": args.seed,
-        "generation_schedule": "single_thought_decision_action_with_empty_retry",
+        "generation_schedule": "greedy_thought_hard_decision_then_sampled_action",
         "candidate_seed_scheme": (
             "sha256(base_seed,episode,step,retry,zero,phase)"
             if args.backend == "vllm"
@@ -712,7 +707,7 @@ def main():
         "config": str(Path(args.config).resolve()),
         "config_sha256": file_sha256(args.config),
         "skills": str(Path(args.skills).resolve()),
-        "skills_sha256": file_sha256(args.skills),
+        "skills_sha256": skillset.content_sha256,
         "git_revision": git_revision(ROOT.parent),
         "source_tree_sha256": source_tree_sha256(ROOT),
         "runtime": runtime_versions(),
@@ -822,9 +817,6 @@ def main():
                 admissible_actions = list(
                     info.get("admissible_commands", [[]])[0]
                 )
-                if not admissible_actions:
-                    raise RuntimeError("TextWorld returned no admissible commands")
-
                 sampled_turns = []
                 candidate_audit = []
                 use_decision = True
@@ -835,8 +827,6 @@ def main():
                     current_observation=observation,
                     obs_history=history,
                     use_decision=use_decision,
-                    admissible_actions=admissible_actions,
-                    show_admissible_actions=args.show_admissible_actions,
                 )
                 prompt_text = render_prompt(
                     backend.tokenizer, SYSTEM_INSTRUCTION, user_prompt
@@ -848,11 +838,11 @@ def main():
                 selected = None
                 sample_index = 0
                 while selected is None:
-                    turn = backend.generate_turns_unconstrained(
+                    turn = backend.generate_turns_training(
                         prompt_text,
+                        skillset,
+                        task_key,
                         count=1,
-                        use_decision=use_decision,
-                        greedy=False,
                         seed_context=(episode_index, step_index, sample_index),
                     )[0]
                     sampled_turns.append((sample_index, turn))
@@ -864,7 +854,6 @@ def main():
                     exclusion_reasons = distill_exclusion_reasons(
                         turn,
                         hmm_sequence,
-                        admissible_actions,
                         max_hmm_prefix_tokens=args.max_hmm_prefix_tokens,
                         max_hmm_sequence_tokens=args.max_hmm_sequence_tokens,
                     )
@@ -891,7 +880,14 @@ def main():
                         "gamefile": gamefile,
                         "task_key": task_key,
                         "use_decision": use_decision,
-                        "show_admissible_actions": args.show_admissible_actions,
+                        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+                        "schema_version": skillset.schema_version,
+                        "policy_version": skillset.policy_version,
+                        "constrained_decision_collection": True,
+                        "no_oracle_filtering": True,
+                        "skills_sha256": skillset.content_sha256,
+                        "model": args.model,
+                        "tokenizer": args.tokenizer or args.model,
                         "temperature": args.temperature,
                         "seed": args.seed,
                         "head_seed": turn.head_seed,

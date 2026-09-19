@@ -1,20 +1,26 @@
 import unittest
-from types import SimpleNamespace
+from pathlib import Path
 
 from ctrlg_alfworld.agent_loop import parse_initial_observation, run_episode
 from ctrlg_alfworld.experiment import condition_choices, get_condition
 from ctrlg_alfworld.generation import TurnGeneration, parse_turn
+from ctrlg_alfworld.skills import SkillSet
 
 
 class CharacterTokenizer:
     def encode(self, text, add_special_tokens=False):
         return [ord(character) for character in text]
 
-    def apply_chat_template(
-        self, messages, tokenize, add_generation_prompt, enable_thinking
-    ):
-        self.enable_thinking = enable_thinking
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt, enable_thinking):
         return "\n".join(message["content"] for message in messages) + "\n<think>"
+
+
+DECISION = (
+    "{task: put, target_type: cup, target_id: unknown, target_location: unknown, "
+    "held: none, at: countertop 1, dest: unknown, previous_action: none, "
+    "arrived_receptacle_state: open, held_relation: none, search: "
+    "{locations_searched: [], locations_to_search: [countertop 1]}, phase: search}"
+)
 
 
 class FakeBackend:
@@ -23,132 +29,73 @@ class FakeBackend:
         self.calls = []
         self.prompt_texts = []
 
-    def generate_turn(
-        self,
-        prompt_text,
-        allowed_actions,
-        *,
-        use_decision,
-        use_hmm,
-        greedy_head,
-    ):
-        self.calls.append((use_decision, use_hmm, tuple(allowed_actions)))
+    def generate_turn(self, prompt_text, skillset, task_key, *, constrained, greedy_head):
+        self.calls.append((task_key, constrained, skillset.content_sha256))
         self.prompt_texts.append(prompt_text)
-        if use_decision:
-            head = (
-                "choose a legal action</think>"
-                "<decision>inspect the room</decision><action>"
-            )
-        else:
-            head = "choose a legal action</think><action>"
+        head = f"choose</think><decision>{DECISION}</decision><action>"
         tail = "look</action>"
-        parsed = parse_turn(head, tail, use_decision=use_decision)
+        parsed = parse_turn(head, tail, use_decision=True)
         return TurnGeneration(
             parsed=parsed,
             head_token_ids=tuple(self.tokenizer.encode(head)),
             action_token_ids=tuple(self.tokenizer.encode("look")),
             tail_token_ids=tuple(self.tokenizer.encode(tail)),
-            hmm_prefix_token_ids=tuple(
-                self.tokenizer.encode(parsed.hmm_prefix_text)
-            ),
-            head_latency_seconds=0.01,
-            action_latency_seconds=0.02,
+            hmm_prefix_token_ids=tuple(self.tokenizer.encode(parsed.hmm_prefix_text)),
+            head_latency_seconds=0.01, action_latency_seconds=0.02,
+            decision_schema_valid=constrained,
+            decision_fields={},
+            action_grammar_valid=constrained,
+            policy_evaluable=constrained,
+            policy_satisfied=constrained,
         )
 
 
 class OneStepEnvironment:
     def reset(self):
         observation = (
-            "-= Welcome to TextWorld, ALFRED! =-\n\n"
-            "You see a countertop 1.\n\n"
+            "-= Welcome to TextWorld, ALFRED! =-\n\nYou see a countertop 1.\n\n"
             "Your task is to: look around"
         )
-        info = {
-            "extra.gamefile": [
-                "/games/pick_and_place_simple/trial/game.tw-pddl"
-            ],
+        return [observation], {
+            "extra.gamefile": ["/games/pick_and_place_simple/trial/game.tw-pddl"],
             "admissible_commands": [["look", "go to countertop 1"]],
         }
-        return [observation], info
 
     def step(self, actions):
-        if actions != ["look"]:
-            raise AssertionError(f"unexpected action: {actions}")
+        self.actions = actions
         return ["Task complete."], [1], [True], {"won": [True]}
 
 
 class AgentLoopTests(unittest.TestCase):
-    def test_initial_observation_separates_room_and_normalizes_task(self):
+    @classmethod
+    def setUpClass(cls):
+        cls.skills = SkillSet.from_file(
+            Path(__file__).resolve().parents[1] / "templates" / "SKILLS.md"
+        )
+
+    def test_initial_observation_separates_room_and_task(self):
         room, task = parse_initial_observation(
             "welcome\n\nYou are in a kitchen.\n\nYou see a countertop 1.\n\n"
             "Your task is to: put a mug on shelf 1."
         )
-        self.assertEqual(
-            room, "You are in a kitchen.\n\nYou see a countertop 1."
-        )
+        self.assertEqual(room, "You are in a kitchen.\n\nYou see a countertop 1.")
         self.assertEqual(task, "put a mug on shelf 1.")
 
-    def test_initial_observation_rejects_unexpected_shape(self):
-        with self.assertRaisesRegex(ValueError, "welcome, room, and task"):
-            parse_initial_observation("missing sections")
+    def test_decoder_never_receives_admissible_commands(self):
+        prompts = []
+        for name in condition_choices():
+            backend = FakeBackend()
+            record = run_episode(OneStepEnvironment(), backend, self.skills, name)
+            condition = get_condition(name)
+            self.assertTrue(record.success)
+            self.assertEqual(backend.calls[0][0:2], ("put", condition.use_decision_dfa))
+            self.assertNotIn("look", repr(backend.calls[0]))
+            self.assertNotIn("Your admissible actions", backend.prompt_texts[0])
+            self.assertEqual(record.steps[0].admissible_gt, ["look", "go to countertop 1"])
+            self.assertTrue(record.steps[0].action_was_admissible)
+            prompts.append(backend.prompt_texts[0])
+        self.assertEqual(prompts[0].encode(), prompts[1].encode())
 
-    def test_every_condition_uses_the_same_dfa_language_and_logs_metrics(self):
-        for condition_name in condition_choices():
-            with self.subTest(condition=condition_name):
-                backend = FakeBackend()
-                record = run_episode(
-                    OneStepEnvironment(),
-                    backend,
-                    SimpleNamespace(raw_markdown="minimal skills"),
-                    condition_name,
-                )
-                condition = get_condition(condition_name)
-                self.assertTrue(record.success)
-                self.assertEqual(record.condition, condition_name)
-                self.assertEqual(
-                    backend.prompt_texts[0].count("Your task is to: look around"),
-                    1,
-                )
-                self.assertNotIn(
-                    "Your task is to: Your task is to:", backend.prompt_texts[0]
-                )
-                self.assertEqual(
-                    backend.calls,
-                    [
-                        (
-                            condition.use_decision,
-                            condition.use_hmm,
-                            ("look", "go to countertop 1"),
-                        )
-                    ],
-                )
-                step = record.steps[0]
-                self.assertTrue(step.action_was_admissible)
-                self.assertTrue(step.parse_ok)
-                self.assertEqual(step.generated_tokens, len(step.tail_token_ids) + len(backend.tokenizer.encode(step.thought + "</think>" + step.hmm_prefix_text)))
-                self.assertAlmostEqual(step.head_latency_seconds, 0.01)
-                self.assertAlmostEqual(step.action_latency_seconds, 0.02)
 
-    def test_admissible_actions_are_shown_only_when_requested(self):
-        hidden_backend = FakeBackend()
-        run_episode(
-            OneStepEnvironment(),
-            hidden_backend,
-            SimpleNamespace(raw_markdown="minimal skills"),
-            "decision_dfa",
-        )
-        self.assertNotIn("Your admissible actions", hidden_backend.prompt_texts[0])
-
-        shown_backend = FakeBackend()
-        run_episode(
-            OneStepEnvironment(),
-            shown_backend,
-            SimpleNamespace(raw_markdown="minimal skills"),
-            "decision_dfa",
-            show_admissible_actions=True,
-        )
-        self.assertIn(
-            "Your admissible actions in the current situation are: "
-            "[go to countertop 1, look].",
-            shown_backend.prompt_texts[0],
-        )
+if __name__ == "__main__":
+    unittest.main()

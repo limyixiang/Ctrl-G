@@ -199,7 +199,7 @@ The decision must contain a single flow-style YAML mapping that summarizes the t
 
 Example:
 
-<decision>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, search: {locations_searched: [countertop 1, dresser 1], locations_to_search: [drawer 1, drawer 2]}, phase: acquire_second}</decision>
+<decision>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, previous_action: move creditcard 2 to dresser 1, arrived_receptacle_state: open, held_relation: none, search: {locations_searched: [countertop 1, dresser 1], locations_to_search: [drawer 1, drawer 2]}, phase: acquire_second}</decision>
 <action>go to countertop 1</action>
 
 ### Value Rules
@@ -209,6 +209,9 @@ Example:
 - Use `none` only when a value is known to be absent, such as an empty hand.
 - `at` is the exact receptacle reached by the most recent successful `go to`.
 - `held` is the exact object currently carried.
+- `previous_action` is the exact action emitted on the preceding trajectory step, or `none` on the first step.
+- `arrived_receptacle_state` describes the receptacle in `at` immediately after arrival; use `not_applicable` when the preceding action was not an arrival.
+- `held_relation` says whether `held` is the requested target type, a non-target type, absent, or unknown. A cup is not a mug and a mug is not a cup.
 - `target` is the selected target instance, or `unknown` before one is found.
 - `dest` is one selected destination instance. Once selected, retain the same instance unless it becomes unusable.
 - `tool` is the exact sinkbasin, microwave, fridge, or desklamp instance needed by the task.
@@ -235,36 +238,202 @@ Every decision must include a `search` mapping:
 
 Pick and place:
 
-`{task: put, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: put, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, previous_action: ACTION|none|unknown, arrived_receptacle_state: open|closed|not_applicable|unknown, held_relation: none|target|non_target|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_destination`, `prepare_destination`, `deliver`.
 
 Clean and place:
 
-`{task: clean, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|clean|unknown, tool: SINKBASIN|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: clean, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|clean|unknown, tool: SINKBASIN|unknown, dest: RECEPTACLE|unknown, previous_action: ACTION|none|unknown, arrived_receptacle_state: open|closed|not_applicable|unknown, held_relation: none|target|non_target|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_tool`, `transform`, `go_destination`, `prepare_destination`, `deliver`.
 
 Heat and place:
 
-`{task: heat, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|hot|unknown, tool: MICROWAVE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: heat, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|hot|unknown, tool: MICROWAVE|unknown, dest: RECEPTACLE|unknown, previous_action: ACTION|none|unknown, arrived_receptacle_state: open|closed|not_applicable|unknown, held_relation: none|target|non_target|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_tool`, `transform`, `go_destination`, `prepare_destination`, `deliver`.
 
 Cool and place:
 
-`{task: cool, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|cool|unknown, tool: FRIDGE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: cool, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, state: unmodified|cool|unknown, tool: FRIDGE|unknown, dest: RECEPTACLE|unknown, previous_action: ACTION|none|unknown, arrived_receptacle_state: open|closed|not_applicable|unknown, held_relation: none|target|non_target|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_tool`, `transform`, `go_destination`, `prepare_destination`, `deliver`.
 
 Examine under a desklamp:
 
-`{task: examine, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, tool: DESKLAMP|unknown, tool_location: RECEPTACLE|unknown, tool_state: inactive|active|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: examine, target_type: TYPE, target_id: ENTITY|unknown, target_location: RECEPTACLE|unknown, held: ENTITY|none|unknown, at: RECEPTACLE|unknown, tool: DESKLAMP|unknown, tool_location: RECEPTACLE|unknown, tool_state: inactive|active|unknown, previous_action: ACTION|none|unknown, arrived_receptacle_state: open|closed|not_applicable|unknown, held_relation: none|target|non_target|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search_target`, `acquire`, `search_tool`, `go_tool`, `use_tool`.
 
 Pick two and place:
 
-`{task: puttwo, target_type: TYPE, required_count: 2, targets: [{id: ENTITY|unknown, location: RECEPTACLE|unknown, status: available|held|placed|unknown}, ...], held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
+`{task: puttwo, target_type: TYPE, required_count: 2, targets: [{id: ENTITY|unknown, location: RECEPTACLE|unknown, status: available|held|placed|unknown}, {id: ENTITY|unknown, location: RECEPTACLE|unknown, status: available|held|placed|unknown}], held: ENTITY|none|unknown, at: RECEPTACLE|unknown, dest: RECEPTACLE|unknown, previous_action: ACTION|none|unknown, arrived_receptacle_state: open|closed|not_applicable|unknown, held_relation: none|target|non_target|unknown, search: {locations_searched: [RECEPTACLE, ...], locations_to_search: [RECEPTACLE, ...]}, phase: PHASE}`
 
 Allowed phases: `search`, `acquire`, `go_destination`, `prepare_destination`, `deliver_first`, `acquire_second`, `deliver_second`.
+
+## Machine-readable Decision and Policy Contract
+
+The following versioned blocks are authoritative. Every decision uses the
+listed key order and one-line flow-style YAML. `previous_action`,
+`arrived_receptacle_state`, and `held_relation` are the model's own claims from
+the supplied trajectory. The two `puttwo` target records are independent and
+may name the same location.
+
+```decision-schema
+version: 1
+task: put
+fields:
+  - {name: task, schema: {type: literal, value: put}}
+  - {name: target_type, schema: {type: lowercase_atom}}
+  - {name: target_id, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: target_location, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: held, schema: {type: numbered_entity, alternatives: [none, unknown]}}
+  - {name: at, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: dest, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: previous_action, schema: {type: action, alternatives: [none, unknown]}}
+  - {name: arrived_receptacle_state, schema: {type: enum, values: [open, closed, not_applicable, unknown]}}
+  - {name: held_relation, schema: {type: enum, values: [none, target, non_target, unknown]}}
+  - {name: search, schema: {type: record, fields: [{name: locations_searched, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}, {name: locations_to_search, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}]}}
+  - {name: phase, schema: {type: enum, values: [search, acquire, go_destination, prepare_destination, deliver]}}
+```
+
+```decision-schema
+version: 1
+task: clean
+fields:
+  - {name: task, schema: {type: literal, value: clean}}
+  - {name: target_type, schema: {type: lowercase_atom}}
+  - {name: target_id, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: target_location, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: held, schema: {type: numbered_entity, alternatives: [none, unknown]}}
+  - {name: at, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: state, schema: {type: enum, values: [unmodified, clean, unknown]}}
+  - {name: tool, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: dest, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: previous_action, schema: {type: action, alternatives: [none, unknown]}}
+  - {name: arrived_receptacle_state, schema: {type: enum, values: [open, closed, not_applicable, unknown]}}
+  - {name: held_relation, schema: {type: enum, values: [none, target, non_target, unknown]}}
+  - {name: search, schema: {type: record, fields: [{name: locations_searched, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}, {name: locations_to_search, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}]}}
+  - {name: phase, schema: {type: enum, values: [search, acquire, go_tool, transform, go_destination, prepare_destination, deliver]}}
+```
+
+```decision-schema
+version: 1
+task: heat
+fields:
+  - {name: task, schema: {type: literal, value: heat}}
+  - {name: target_type, schema: {type: lowercase_atom}}
+  - {name: target_id, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: target_location, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: held, schema: {type: numbered_entity, alternatives: [none, unknown]}}
+  - {name: at, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: state, schema: {type: enum, values: [unmodified, hot, unknown]}}
+  - {name: tool, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: dest, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: previous_action, schema: {type: action, alternatives: [none, unknown]}}
+  - {name: arrived_receptacle_state, schema: {type: enum, values: [open, closed, not_applicable, unknown]}}
+  - {name: held_relation, schema: {type: enum, values: [none, target, non_target, unknown]}}
+  - {name: search, schema: {type: record, fields: [{name: locations_searched, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}, {name: locations_to_search, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}]}}
+  - {name: phase, schema: {type: enum, values: [search, acquire, go_tool, transform, go_destination, prepare_destination, deliver]}}
+```
+
+```decision-schema
+version: 1
+task: cool
+fields:
+  - {name: task, schema: {type: literal, value: cool}}
+  - {name: target_type, schema: {type: lowercase_atom}}
+  - {name: target_id, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: target_location, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: held, schema: {type: numbered_entity, alternatives: [none, unknown]}}
+  - {name: at, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: state, schema: {type: enum, values: [unmodified, cool, unknown]}}
+  - {name: tool, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: dest, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: previous_action, schema: {type: action, alternatives: [none, unknown]}}
+  - {name: arrived_receptacle_state, schema: {type: enum, values: [open, closed, not_applicable, unknown]}}
+  - {name: held_relation, schema: {type: enum, values: [none, target, non_target, unknown]}}
+  - {name: search, schema: {type: record, fields: [{name: locations_searched, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}, {name: locations_to_search, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}]}}
+  - {name: phase, schema: {type: enum, values: [search, acquire, go_tool, transform, go_destination, prepare_destination, deliver]}}
+```
+
+```decision-schema
+version: 1
+task: examine
+fields:
+  - {name: task, schema: {type: literal, value: examine}}
+  - {name: target_type, schema: {type: lowercase_atom}}
+  - {name: target_id, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: target_location, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: held, schema: {type: numbered_entity, alternatives: [none, unknown]}}
+  - {name: at, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: tool, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: tool_location, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: tool_state, schema: {type: enum, values: [inactive, active, unknown]}}
+  - {name: previous_action, schema: {type: action, alternatives: [none, unknown]}}
+  - {name: arrived_receptacle_state, schema: {type: enum, values: [open, closed, not_applicable, unknown]}}
+  - {name: held_relation, schema: {type: enum, values: [none, target, non_target, unknown]}}
+  - {name: search, schema: {type: record, fields: [{name: locations_searched, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}, {name: locations_to_search, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}]}}
+  - {name: phase, schema: {type: enum, values: [search_target, acquire, search_tool, go_tool, use_tool]}}
+```
+
+```decision-schema
+version: 1
+task: puttwo
+fields:
+  - {name: task, schema: {type: literal, value: puttwo}}
+  - {name: target_type, schema: {type: lowercase_atom}}
+  - {name: required_count, schema: {type: literal, value: 2}}
+  - {name: targets, schema: {type: bounded_list, item: {type: record, fields: [{name: id, schema: {type: numbered_entity, alternatives: [unknown]}}, {name: location, schema: {type: numbered_entity, alternatives: [unknown]}}, {name: status, schema: {type: enum, values: [available, held, placed, unknown]}}]}, min_items: 2, max_items: 2}}
+  - {name: held, schema: {type: numbered_entity, alternatives: [none, unknown]}}
+  - {name: at, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: dest, schema: {type: numbered_entity, alternatives: [unknown]}}
+  - {name: previous_action, schema: {type: action, alternatives: [none, unknown]}}
+  - {name: arrived_receptacle_state, schema: {type: enum, values: [open, closed, not_applicable, unknown]}}
+  - {name: held_relation, schema: {type: enum, values: [none, target, non_target, unknown]}}
+  - {name: search, schema: {type: record, fields: [{name: locations_searched, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}, {name: locations_to_search, schema: {type: bounded_list, item: {type: numbered_entity, alternatives: []}, min_items: 0, max_items: 64}}]}}
+  - {name: phase, schema: {type: enum, values: [search, acquire, go_destination, prepare_destination, deliver_first, acquire_second, deliver_second]}}
+```
+
+```policy
+version: 1
+name: open_declared_closed_receptacle
+priority: 100
+when:
+  - {field: arrived_receptacle_state, equals: closed}
+  - {field: at, is_type: numbered_entity}
+effect:
+  require_action: {action: open, bindings: {recep: at}}
+```
+
+```policy
+version: 1
+name: put_down_declared_non_target
+priority: 90
+when:
+  - {field: held_relation, equals: non_target}
+  - {field: held, is_type: numbered_entity}
+  - {field: at, is_type: numbered_entity}
+effect:
+  require_action: {action: move, bindings: {obj: held, recep: at}}
+```
+
+```policy
+version: 1
+name: preserve_target_lexical_type
+priority: 20
+when: []
+effect:
+  restrict_take_type: {field: target_type}
+```
+
+```policy
+version: 1
+name: do_not_repeat_declared_previous_action
+priority: 10
+when:
+  - {field: previous_action, not_in: [none, unknown]}
+effect:
+  forbid_exact_action: {field: previous_action}
+```

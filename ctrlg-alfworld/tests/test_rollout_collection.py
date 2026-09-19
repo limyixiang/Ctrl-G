@@ -481,7 +481,6 @@ class RolloutCollectionTests(unittest.TestCase):
             run_rollouts.distill_exclusion_reasons(
                 turn,
                 [10, 11, 20, 0],
-                ["look"],
                 max_hmm_prefix_tokens=None,
                 max_hmm_sequence_tokens=128,
             ),
@@ -500,24 +499,22 @@ class RolloutCollectionTests(unittest.TestCase):
             run_rollouts.distill_exclusion_reasons(
                 turn,
                 [10, 11, 20, 0],
-                ["look"],
                 max_hmm_prefix_tokens=None,
                 max_hmm_sequence_tokens=128,
             ),
             ["synthetic_decision_close", "decision_truncated"],
         )
 
-    def test_distillation_excludes_inadmissible_action(self):
+    def test_distillation_keeps_structurally_valid_inadmissible_action(self):
         turn = make_turn(parse_ok=True, action="go to nowhere")
         self.assertEqual(
             run_rollouts.distill_exclusion_reasons(
                 turn,
                 [10, 11, 20, 0],
-                ["look"],
                 max_hmm_prefix_tokens=None,
                 max_hmm_sequence_tokens=128,
             ),
-            ["inadmissible_action"],
+            [],
         )
 
 

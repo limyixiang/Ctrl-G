@@ -162,11 +162,6 @@ def load_eligible_records(
                         f"{path}:{line_number} distillation-eligible sample "
                         "is not well formed"
                     )
-                if record.get("action_was_admissible") is not True:
-                    raise ValueError(
-                        f"{path}:{line_number} distillation-eligible sample "
-                        "is not admissible"
-                    )
                 validate_record(record, source=f"{path}:{line_number}")
                 records.append(record)
     if selected_actions is not None:
@@ -182,20 +177,28 @@ def load_eligible_records(
     return records
 
 
-def validate_prompt_regime(records: list[dict]) -> bool:
-    """Return the shared action-list prompt setting, rejecting mixed data."""
+def validate_prompt_regime(records: list[dict]) -> dict:
+    """Validate the no-oracle, constrained-decision collection provenance."""
 
     if not records:
         raise ValueError("at least one record is required to validate prompt regime")
-    values = [record.get("show_admissible_actions", False) for record in records]
-    if any(not isinstance(value, bool) for value in values):
-        raise ValueError("show_admissible_actions must be a boolean")
-    unique_values = set(values)
-    if len(unique_values) != 1:
-        raise ValueError(
-            "cannot mix samples with shown and hidden admissible-action prompts"
-        )
-    return unique_values.pop()
+    fields = (
+        "schema_version", "policy_version", "constrained_decision_collection",
+        "no_oracle_filtering", "skills_sha256",
+        "model", "tokenizer",
+        "prompt_format",
+    )
+    result = {}
+    for field in fields:
+        values = {record.get(field) for record in records}
+        if len(values) != 1 or None in values:
+            raise ValueError(f"records do not share one {field}")
+        result[field] = values.pop()
+    if result["constrained_decision_collection"] is not True:
+        raise ValueError("HMM samples must use hard-DFA decision collection")
+    if result["no_oracle_filtering"] is not True:
+        raise ValueError("HMM samples must not be filtered by the environment oracle")
+    return result
 
 
 def validate_record(record: dict, *, source: str = "record") -> None:
