@@ -73,8 +73,8 @@ within the remaining budget.
 
 Training samples match the strict evaluator's prefix distribution: a hard-DFA
 decision is followed by an unconstrained sampled action. Both the in-process HF
-backend and vLLM 0.10.2 are supported; vLLM receives the decision language as
-`guided_regex`.
+backend and vLLM 0.12.0 or newer are supported; vLLM receives the decision
+language through `structured_outputs.regex`.
 
 ```bash
 python ctrlg-alfworld/scripts/run_rollouts.py \

@@ -109,7 +109,7 @@ class BackendIntegrationTests(unittest.TestCase):
         self.assertEqual(turn.parsed.action, "inventory")
         self.assertNotIn("admissible", repr(seen))
 
-    def test_vllm_sends_guided_regex_and_preserves_token_ids(self):
+    def test_vllm_sends_structured_regex_and_preserves_token_ids(self):
         tokenizer = CharacterTokenizer()
         backend = object.__new__(VLLMBackend)
         backend.tokenizer = tokenizer
@@ -130,10 +130,35 @@ class BackendIntegrationTests(unittest.TestCase):
             "prompt", [ACTION_CLOSE], 32, 0.7,
             seed=11, guided_regex=r"look</action>",
         )
-        self.assertEqual(captured["extra_body"]["guided_regex"], r"look</action>")
+        self.assertEqual(
+            captured["extra_body"]["structured_outputs"],
+            {"regex": r"look</action>"},
+        )
+        self.assertNotIn("guided_regex", captured["extra_body"])
         self.assertEqual(captured["extra_body"]["seed"], 11)
         self.assertEqual(result.token_ids, tuple(tokenizer.encode("look</action>")))
         self.assertTrue(result.stop_found)
+
+    def test_vllm_structured_regex_fails_closed(self):
+        tokenizer = CharacterTokenizer()
+        backend = object.__new__(VLLMBackend)
+        backend.tokenizer = tokenizer
+        backend.model = "m"
+        backend.cfg = GenConfig(seed=7)
+
+        class Completions:
+            def create(self, **kwargs):
+                text = "\nlook</action>"
+                return SimpleNamespace(choices=[SimpleNamespace(
+                    text=text, token_ids=tokenizer.encode(text), model_extra=None
+                )])
+
+        backend.client = SimpleNamespace(completions=Completions())
+        with self.assertRaisesRegex(RuntimeError, "outside the requested"):
+            backend._generate_until(
+                "prompt", [ACTION_CLOSE], 32, 0.7,
+                seed=11, guided_regex=r"look</action>",
+            )
 
     def test_vllm_batch_preserves_input_order_and_per_candidate_seeds(self):
         backend = object.__new__(VLLMBackend)

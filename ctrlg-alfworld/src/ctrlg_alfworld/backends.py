@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -789,7 +790,7 @@ class VLLMBackend(BaseBackend):
             "skip_special_tokens": False,
         }
         if guided_regex is not None:
-            extra_body["guided_regex"] = guided_regex
+            extra_body["structured_outputs"] = {"regex": guided_regex}
         response = self.client.completions.create(
             model=self.model,
             prompt=prompt_text,
@@ -829,6 +830,11 @@ class VLLMBackend(BaseBackend):
         text, token_ids, stop_found = _crop_chunk_at_stop(
             self.tokenizer, list(token_ids), stop_strings
         )
+        if guided_regex is not None and re.fullmatch(guided_regex, text) is None:
+            raise RuntimeError(
+                "vLLM returned text outside the requested structured-output "
+                f"regex: {text!r}"
+            )
         return GeneratedChunk(
             text=text,
             token_ids=tuple(token_ids),

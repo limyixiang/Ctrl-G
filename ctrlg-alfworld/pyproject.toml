@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vllm = ["openai>=1.0", "vllm>=0.10.2"]
+vllm = ["openai>=1.0", "vllm>=0.12.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
