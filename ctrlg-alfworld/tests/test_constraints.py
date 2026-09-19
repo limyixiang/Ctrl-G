@@ -6,9 +6,11 @@ import torch
 
 from ctrlg_alfworld.constraints import (
     HardDFALogitsProcessor,
+    action_span_pattern,
     action_grammar_valid,
     compile_policy_language,
     decision_body_pattern,
+    decision_span_pattern,
     dfa_accepts,
     lift_character_fsm,
     parse_decision,
@@ -70,6 +72,22 @@ class ConstraintTests(unittest.TestCase):
         })
         for schema in self.skills.decision_schemas.values():
             self.assertFalse(regex_fsm(decision_body_pattern(schema, self.skills)).empty())
+
+    def test_generated_patterns_leave_literal_spaces_unescaped(self):
+        patterns = [action_span_pattern(self.skills)] + [
+            decision_span_pattern(schema, self.skills)
+            for schema in self.skills.decision_schemas.values()
+        ]
+        for pattern in patterns:
+            self.assertNotIn(r"\ ", pattern)
+            self.assertFalse(regex_fsm(pattern).empty())
+
+        decision = parse_decision(
+            self.put_decision(arrived_receptacle_state="closed"),
+            self.skills.decision_schemas["put"], self.skills,
+        )
+        required = compile_policy_language(decision, self.skills)
+        self.assertNotIn(r"\ ", required.pattern)
 
     def test_fixed_order_and_categories_are_enforced(self):
         schema = self.skills.decision_schemas["put"]

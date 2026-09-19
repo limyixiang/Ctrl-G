@@ -27,7 +27,10 @@ _TOKEN_TEXT_CACHE: dict[tuple, dict[int, str]] = {}
 
 
 def _literal(value: Any) -> str:
-    return re.escape(str(value))
+    # Python escapes literal spaces as ``\ ``, but vLLM's Rust-style regex
+    # converter warns about that nonstandard escape on every request. A plain
+    # space is literal in both regex dialects.
+    return re.escape(str(value)).replace(r"\ ", " ")
 
 
 def _choice(patterns: Sequence[str]) -> str:
@@ -46,13 +49,13 @@ def action_body_pattern(skillset: SkillSet, *, take_type: str | None = None) -> 
         cursor = 0
         pieces: list[str] = []
         for match in PLACEHOLDER_RE.finditer(template):
-            pieces.append(re.escape(template[cursor : match.start()]))
+            pieces.append(_literal(template[cursor : match.start()]))
             if action.name == "take" and match.group(1) == "obj" and take_type:
-                pieces.append(re.escape(take_type) + r" [1-9][0-9]*")
+                pieces.append(_literal(take_type) + r" [1-9][0-9]*")
             else:
                 pieces.append(ENTITY_PATTERN)
             cursor = match.end()
-        pieces.append(re.escape(template[cursor:]))
+        pieces.append(_literal(template[cursor:]))
         patterns.append("".join(pieces))
     return _choice(patterns)
 
@@ -95,7 +98,7 @@ def _schema_node_pattern(node: dict[str, Any], skillset: SkillSet) -> str:
 
 def _fields_pattern(fields: Sequence[dict[str, Any]], skillset: SkillSet) -> str:
     pairs = [
-        re.escape(field["name"] + ": ")
+        _literal(field["name"] + ": ")
         + _schema_node_pattern(field["schema"], skillset)
         for field in fields
     ]
@@ -107,11 +110,11 @@ def decision_body_pattern(schema: DecisionSchema, skillset: SkillSet) -> str:
 
 
 def decision_span_pattern(schema: DecisionSchema, skillset: SkillSet) -> str:
-    return decision_body_pattern(schema, skillset) + re.escape(DECISION_CLOSE)
+    return decision_body_pattern(schema, skillset) + _literal(DECISION_CLOSE)
 
 
 def action_span_pattern(skillset: SkillSet, *, take_type: str | None = None) -> str:
-    return action_body_pattern(skillset, take_type=take_type) + re.escape(ACTION_CLOSE)
+    return action_body_pattern(skillset, take_type=take_type) + _literal(ACTION_CLOSE)
 
 
 def regex_fsm(pattern: str):
@@ -449,7 +452,7 @@ def compile_policy_language(decision: dict[str, Any], skillset: SkillSet) -> Pol
         shadowed = tuple(rule.name for rule in matching if rule is not winner and rule.priority < winner.priority)
         try:
             action = _bind_required_action(winner, decision, skillset)
-            pattern = re.escape(action + ACTION_CLOSE)
+            pattern = _literal(action + ACTION_CLOSE)
             fsm = regex_fsm(pattern)
             if (fsm & generic_fsm).empty():
                 raise ValueError("required action is outside the generic action grammar")
@@ -484,7 +487,7 @@ def compile_policy_language(decision: dict[str, Any], skillset: SkillSet) -> Pol
         pattern = action_span_pattern(skillset, take_type=take_type)
         fsm = regex_fsm(pattern)
         if forbidden is not None:
-            fsm = fsm - regex_fsm(re.escape(forbidden + ACTION_CLOSE))
+            fsm = fsm - regex_fsm(_literal(forbidden + ACTION_CLOSE))
         if fsm.empty():
             raise ValueError("policy intersection is empty")
         return PolicyCompilation(
