@@ -107,6 +107,10 @@ class TurnGeneration:
     thought_truncated: bool = False
     decision_stop_found: bool = False
     decision_truncated: bool = False
+    decision_attempts: int = 1
+    decision_retry_used: bool = False
+    decision_attempt_seeds: tuple[int, ...] = ()
+    decision_failure_reasons: tuple[str, ...] = ()
     used_thought_repair: bool = False
     used_decision_repair: bool = False
     decision_schema_valid: bool = False

@@ -71,10 +71,9 @@ within the remaining budget.
 
 ## HMM data collection
 
-Training samples match the strict evaluator's prefix distribution: a hard-DFA
-decision is followed by an unconstrained sampled action. Both the in-process HF
-backend and vLLM 0.12.0 or newer are supported; vLLM receives the decision
-language through `structured_outputs.regex`.
+Training samples use a hard-DFA decision followed by an unconstrained sampled
+action. Both the in-process HF backend and vLLM 0.12.0 or newer are supported;
+vLLM receives the decision language through `structured_outputs.regex`.
 
 ```bash
 python ctrlg-alfworld/scripts/run_rollouts.py \
@@ -83,6 +82,8 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --tokenizer Qwen/Qwen3.5-9B \
   --num_episodes 100 \
   --max_decision_tokens 512 \
+  --decision_max_attempts 5 \
+  --decision_retry_temperature 0.2 \
   --max_action_tokens 32 \
   --max_hmm_sequence_tokens 640 \
   --out results/alfworld/9b_policy_hmm
@@ -92,6 +93,13 @@ Every structurally valid, token-exact sample is eligible regardless of action
 admissibility. Dataset/checkpoint metadata records the skill hash, schema and
 policy versions, model/tokenizer, hard-decision collection regime, and
 no-oracle filtering flag.
+
+vLLM decision collection makes one greedy structured-output attempt, then up
+to four deterministic low-temperature attempts with distinct seeds. If all
+five attempts fail to complete the schema, the terminal sample is recorded as
+non-distillable and that episode ends; valid samples from its earlier steps are
+retained. `metadata.json` reports decision retry, recovery, and exhausted-
+episode rates for the model run.
 
 Prepare Ctrl-G data with:
 

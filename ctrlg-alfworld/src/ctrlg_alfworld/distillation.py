@@ -27,6 +27,7 @@ def load_advance_selections(
     selected_states: set[tuple[int, int]] = set()
     trace_steps = 0
     fallback_steps = 0
+    terminal_failure_steps = 0
     with open(path) as input_file:
         for line_number, line in enumerate(input_file, start=1):
             if not line.strip():
@@ -58,7 +59,10 @@ def load_advance_selections(
 
                 sample = trace.get("sample")
                 if sample is None:
-                    fallback_steps += 1
+                    if trace.get("termination_reason"):
+                        terminal_failure_steps += 1
+                    else:
+                        fallback_steps += 1
                     continue
                 action = trace.get("action")
                 if not isinstance(action, str) or not action:
@@ -74,6 +78,7 @@ def load_advance_selections(
         "advance_trace_steps": trace_steps,
         "sampled_advance_steps": len(selected_actions),
         "fallback_advance_steps": fallback_steps,
+        "terminal_failure_steps": terminal_failure_steps,
     }
 
 
@@ -187,6 +192,7 @@ def validate_prompt_regime(records: list[dict]) -> dict:
         "no_oracle_filtering", "skills_sha256",
         "model", "tokenizer",
         "prompt_format",
+        "decision_max_attempts", "decision_retry_temperature",
     )
     result = {}
     for field in fields:

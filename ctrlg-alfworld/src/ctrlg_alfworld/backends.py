@@ -76,6 +76,43 @@ class GenConfig:
     rollout_temperature: float = 0.7
     seed: int = 42
     max_hmm_prefix_tokens: int | None = None
+    decision_max_attempts: int = 5
+    decision_retry_temperature: float = 0.2
+
+
+class StructuredOutputMismatchError(RuntimeError):
+    """A vLLM structured-output request ended outside its requested language."""
+
+    def __init__(self, chunk: GeneratedChunk):
+        self.chunk = chunk
+        reason = (
+            "max_tokens_before_accept"
+            if chunk.truncated
+            else "structured_output_mismatch"
+        )
+        self.reason = reason
+        super().__init__(
+            "vLLM returned text outside the requested structured-output regex: "
+            f"{chunk.text!r}"
+        )
+
+
+class DecisionGenerationExhausted(RuntimeError):
+    """All bounded vLLM decision attempts failed structural validation."""
+
+    def __init__(
+        self,
+        *,
+        thought: GeneratedChunk,
+        thought_seed: int,
+        attempt_records: tuple[dict, ...],
+    ):
+        self.thought = thought
+        self.thought_seed = thought_seed
+        self.attempt_records = attempt_records
+        super().__init__(
+            f"decision generation exhausted {len(attempt_records)} attempts"
+        )
 
 
 def _crop_chunk_at_stop(tokenizer, token_ids: list[int], stop_strings) -> tuple[str, list[int], bool]:
@@ -830,18 +867,16 @@ class VLLMBackend(BaseBackend):
         text, token_ids, stop_found = _crop_chunk_at_stop(
             self.tokenizer, list(token_ids), stop_strings
         )
-        if guided_regex is not None and re.fullmatch(guided_regex, text) is None:
-            raise RuntimeError(
-                "vLLM returned text outside the requested structured-output "
-                f"regex: {text!r}"
-            )
-        return GeneratedChunk(
+        chunk = GeneratedChunk(
             text=text,
             token_ids=tuple(token_ids),
             stop_found=stop_found,
             truncated=not stop_found,
             latency_seconds=latency,
         )
+        if guided_regex is not None and re.fullmatch(guided_regex, text) is None:
+            raise StructuredOutputMismatchError(chunk)
+        return chunk
 
     def _generate_batch_until(
         self,
@@ -982,7 +1017,7 @@ class VLLMBackend(BaseBackend):
         count: int,
         seed_context: tuple[int, ...] = (),
     ) -> list[TurnGeneration]:
-        """Collect the evaluator-matched hard-decision distribution on vLLM."""
+        """Collect hard decisions with bounded retries, then sampled actions."""
 
         if count < 1:
             raise ValueError("count must be at least one")
@@ -990,10 +1025,6 @@ class VLLMBackend(BaseBackend):
         action_temperature = self.cfg.rollout_temperature
         thought_seeds = [
             self._stable_seed(self.cfg.seed, seed_context, index, "thought")
-            for index in range(count)
-        ]
-        decision_seeds = [
-            self._stable_seed(self.cfg.seed, seed_context, index, "decision")
             for index in range(count)
         ]
         action_seeds = [
@@ -1010,10 +1041,122 @@ class VLLMBackend(BaseBackend):
             for thought in thoughts
         ]
         pattern = decision_span_pattern(skillset.decision_schemas[task_key], skillset)
-        decisions = self._generate_batch_until(
-            decision_prompts, [DECISION_CLOSE], self.cfg.max_decision_tokens,
-            head_temperature, decision_seeds, guided_regex=pattern,
-        )
+        if self.cfg.decision_max_attempts < 1:
+            raise ValueError("decision_max_attempts must be at least one")
+        if (
+            self.cfg.decision_max_attempts > 1
+            and self.cfg.decision_retry_temperature <= 0
+        ):
+            raise ValueError(
+                "decision_retry_temperature must be positive when retries are enabled"
+            )
+
+        decisions = []
+        decision_seeds = []
+        decision_attempt_records = []
+        for candidate_index, (thought, thought_seed, decision_prompt) in enumerate(
+            zip(thoughts, thought_seeds, decision_prompts)
+        ):
+            failed_records = []
+            attempt_seeds = []
+            decision = None
+            for attempt_index in range(self.cfg.decision_max_attempts):
+                phase = (
+                    "decision"
+                    if attempt_index == 0
+                    else f"decision_retry_{attempt_index}"
+                )
+                attempt_seed = self._stable_seed(
+                    self.cfg.seed, seed_context, candidate_index, phase
+                )
+                attempt_seeds.append(attempt_seed)
+                attempt_temperature = (
+                    head_temperature
+                    if attempt_index == 0
+                    else self.cfg.decision_retry_temperature
+                )
+                try:
+                    decision = self._generate_until(
+                        decision_prompt,
+                        [DECISION_CLOSE],
+                        self.cfg.max_decision_tokens,
+                        attempt_temperature,
+                        seed=attempt_seed,
+                        guided_regex=pattern,
+                    )
+                except StructuredOutputMismatchError as exc:
+                    failed_records.append(
+                        {
+                            "attempt": attempt_index + 1,
+                            "seed": attempt_seed,
+                            "temperature": (
+                                0.0
+                                if attempt_temperature is None
+                                else attempt_temperature
+                            ),
+                            "reason": exc.reason,
+                            "num_tokens": exc.chunk.num_tokens,
+                            "latency_seconds": exc.chunk.latency_seconds,
+                        }
+                    )
+                    continue
+                try:
+                    decision_body = decision.text.split(DECISION_CLOSE, 1)[0].strip()
+                    parse_decision(
+                        decision_body,
+                        skillset.decision_schemas[task_key],
+                        skillset,
+                    )
+                except ValueError:
+                    failed_records.append(
+                        {
+                            "attempt": attempt_index + 1,
+                            "seed": attempt_seed,
+                            "temperature": (
+                                0.0
+                                if attempt_temperature is None
+                                else attempt_temperature
+                            ),
+                            "reason": "decision_parse_failure",
+                            "num_tokens": decision.num_tokens,
+                            "latency_seconds": decision.latency_seconds,
+                        }
+                    )
+                    decision = None
+                    continue
+                break
+
+            if decision is None:
+                raise DecisionGenerationExhausted(
+                    thought=thought,
+                    thought_seed=thought_seed,
+                    attempt_records=tuple(failed_records),
+                )
+
+            # Latency metrics should include failed constrained attempts that
+            # preceded the accepted decision, while token IDs remain those of
+            # the accepted span only.
+            failed_latency = sum(
+                record["latency_seconds"] for record in failed_records
+            )
+            if failed_latency:
+                decision = GeneratedChunk(
+                    text=decision.text,
+                    token_ids=decision.token_ids,
+                    stop_found=decision.stop_found,
+                    truncated=decision.truncated,
+                    latency_seconds=decision.latency_seconds + failed_latency,
+                )
+            decisions.append(decision)
+            decision_seeds.append(attempt_seeds[-1])
+            decision_attempt_records.append(
+                {
+                    "attempt_seeds": tuple(attempt_seeds),
+                    "failure_reasons": tuple(
+                        record["reason"] for record in failed_records
+                    ),
+                }
+            )
         heads = [
             self._assemble_head(thought, decision, use_decision=True)
             for thought, decision in zip(thoughts, decisions)
@@ -1023,8 +1166,13 @@ class VLLMBackend(BaseBackend):
             [ACTION_CLOSE], self.cfg.max_action_tokens, action_temperature, action_seeds,
         )
         turns = []
-        for head, tail, thought_seed, decision_seed, action_seed in zip(
-            heads, tails, thought_seeds, decision_seeds, action_seeds
+        for head, tail, thought_seed, decision_seed, action_seed, attempt_record in zip(
+            heads,
+            tails,
+            thought_seeds,
+            decision_seeds,
+            action_seeds,
+            decision_attempt_records,
         ):
             turn = self._assemble_unconstrained_turn(
                 head, tail, use_decision=True, head_seed=thought_seed,
@@ -1034,6 +1182,18 @@ class VLLMBackend(BaseBackend):
                 turn.parsed.decision, skillset.decision_schemas[task_key], skillset
             )
             turns.append(TurnGeneration(
-                **{**turn.__dict__, "decision_schema_valid": True, "decision_fields": fields}
+                **{
+                    **turn.__dict__,
+                    "decision_schema_valid": True,
+                    "decision_fields": fields,
+                    "decision_attempts": len(attempt_record["attempt_seeds"]),
+                    "decision_retry_used": bool(
+                        attempt_record["failure_reasons"]
+                    ),
+                    "decision_attempt_seeds": attempt_record["attempt_seeds"],
+                    "decision_failure_reasons": attempt_record[
+                        "failure_reasons"
+                    ],
+                }
             ))
         return turns

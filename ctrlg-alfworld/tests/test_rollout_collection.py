@@ -350,6 +350,73 @@ class RolloutCollectionTests(unittest.TestCase):
                 run_rollouts.read_history_records(history_path), histories[:1]
             )
 
+    def test_resume_retains_terminal_ineligible_decision_failure(self):
+        sample = {
+            "episode": 0,
+            "step": 0,
+            "sample": 0,
+            "action": "",
+            "decision_attempts": 5,
+            "distill_eligible": False,
+            "distill_exclusion_reasons": ["decision_generation_exhausted"],
+        }
+        trace = {
+            "step": 0,
+            "sample": None,
+            "selected_sample": None,
+            "failed_sample": 0,
+            "sample_attempts": 1,
+            "action": "",
+            "action_taken": "",
+            "decision": "",
+            "fallback_reason": "decision_generation_exhausted",
+            "termination_reason": "decision_generation_exhausted",
+            "observation": "Still here.",
+        }
+        episode = {
+            "episode": 0,
+            "gamefile": "game-0",
+            "task_key": "put",
+            "success": False,
+            "termination_reason": "decision_generation_exhausted",
+            "num_steps": 1,
+            "advance_sources": ["decision_generation_exhausted"],
+            "advance_trace": [trace],
+        }
+        history_step = dict(trace)
+        history_record = {
+            "episode": 0,
+            "gamefile": "game-0",
+            "task_key": "put",
+            "success": False,
+            "termination_reason": "decision_generation_exhausted",
+            "steps": [history_step],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            samples_path = directory / "samples.jsonl"
+            episodes_path = directory / "episodes.jsonl"
+            history_path = directory / "history.jsonl"
+            samples_path.write_text(json.dumps(sample) + "\n", encoding="utf-8")
+            episodes_path.write_text(json.dumps(episode) + "\n", encoding="utf-8")
+            history_path.write_text(
+                json.dumps(history_record) + "\n", encoding="utf-8"
+            )
+
+            state = run_rollouts.recover_resume_state(
+                samples_path, episodes_path, history_path, num_episodes=1
+            )
+
+        self.assertEqual(state[0:3], (1, 1, 0))
+        self.assertEqual(
+            state[4]["decision"]["exclusions"],
+            {"decision_generation_exhausted": 1},
+        )
+        self.assertEqual(
+            state[6],
+            {"calls": 1, "attempts": 5, "retried_calls": 1, "exhausted_calls": 1},
+        )
+
     def test_resume_metadata_rejects_changed_collection_setting(self):
         expected = {field: None for field in run_rollouts.RESUME_COMPATIBILITY_FIELDS}
         existing = dict(expected)
@@ -380,6 +447,15 @@ class RolloutCollectionTests(unittest.TestCase):
                     {"admissible_raw_model_sample": 2}
                 ),
                 per_format=per_format,
+                decision_retry_counts=Counter(
+                    {
+                        "calls": 4,
+                        "attempts": 8,
+                        "retried_calls": 2,
+                        "recovered_calls": 1,
+                        "exhausted_calls": 1,
+                    }
+                ),
             )
             written = json.loads(path.read_text(encoding="utf-8"))
 
@@ -387,6 +463,11 @@ class RolloutCollectionTests(unittest.TestCase):
         self.assertEqual(written["successful_episodes"], 1)
         self.assertEqual(written["success_rate"], 0.5)
         self.assertEqual(written["collection_status"], "in_progress")
+        self.assertEqual(written["decision_retries"]["retry_rate"], 0.5)
+        self.assertEqual(written["decision_retries"]["recovery_rate"], 0.5)
+        self.assertEqual(
+            written["decision_retries"]["exhausted_episode_rate"], 0.5
+        )
 
     def test_v3_history_reconciles_attempt_count_and_executed_action(self):
         history = {

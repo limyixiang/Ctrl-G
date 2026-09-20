@@ -44,7 +44,7 @@ def resolve_hmm_path(
 def validate_hmm_provenance(
     hmm_path: str | None, *, skillset: SkillSet, model: str
 ) -> tuple[str | None, dict | None]:
-    """Require evaluator-matched, no-oracle action-HMM provenance."""
+    """Require constrained-decision, no-oracle action-HMM provenance."""
 
     if hmm_path is None:
         return None, None

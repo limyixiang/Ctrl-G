@@ -32,6 +32,8 @@ def make_record(use_decision, marker):
         "model": "model",
         "tokenizer": "model",
         "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+        "decision_max_attempts": 5,
+        "decision_retry_temperature": 0.2,
         "prompt_token_ids": [1, 2],
         "head_token_ids": [3, 4] + prefix,
         "hmm_prefix_token_ids": prefix,
@@ -173,6 +175,29 @@ class DistillationDataTests(unittest.TestCase):
             episodes_path = write_jsonl(directory, "episodes.jsonl", episodes)
             with self.assertRaisesRegex(ValueError, "more than one turn"):
                 load_advance_selections(episodes_path)
+
+    def test_advance_trace_skips_terminal_decision_failure(self):
+        episodes = [
+            {
+                "episode": 0,
+                "advance_trace": [
+                    {
+                        "step": 0,
+                        "sample": None,
+                        "failed_sample": 0,
+                        "termination_reason": "decision_generation_exhausted",
+                        "action": "",
+                    }
+                ],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            episodes_path = write_jsonl(directory, "episodes.jsonl", episodes)
+            selected_actions, stats = load_advance_selections(episodes_path)
+
+        self.assertEqual(selected_actions, {})
+        self.assertEqual(stats["terminal_failure_steps"], 1)
+        self.assertEqual(stats["fallback_advance_steps"], 0)
 
     def test_selected_only_rejects_action_mismatch(self):
         sample = make_rollout_record(

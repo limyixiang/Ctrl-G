@@ -2,7 +2,14 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from ctrlg_alfworld.backends import BaseBackend, GenConfig, HFBackend, VLLMBackend
+from ctrlg_alfworld.backends import (
+    BaseBackend,
+    DecisionGenerationExhausted,
+    GenConfig,
+    HFBackend,
+    StructuredOutputMismatchError,
+    VLLMBackend,
+)
 from ctrlg_alfworld.generation import GeneratedChunk, TurnGeneration, parse_turn
 from ctrlg_alfworld.prompts import ACTION_CLOSE
 from ctrlg_alfworld.skills import SkillSet
@@ -177,6 +184,80 @@ class BackendIntegrationTests(unittest.TestCase):
         self.assertEqual(sorted(seen), [
             ("a", 31, "regex"), ("b", 32, "regex"), ("c", 33, "regex")
         ])
+
+    def test_vllm_training_retries_failed_decision_with_distinct_seeds(self):
+        tokenizer = CharacterTokenizer()
+        backend = object.__new__(VLLMBackend)
+        backend.tokenizer = tokenizer
+        backend.cfg = GenConfig(
+            max_decision_tokens=512,
+            max_action_tokens=32,
+            seed=17,
+            decision_max_attempts=5,
+            decision_retry_temperature=0.2,
+        )
+        decision_calls = []
+
+        def generate(prompt, stops, cap, temperature, *, seed, guided_regex=None):
+            if guided_regex is not None:
+                decision_calls.append((temperature, seed))
+                if len(decision_calls) < 3:
+                    raise StructuredOutputMismatchError(
+                        chunk("repeated", tokenizer, stop=False)
+                    )
+                return chunk(DECISION + "</decision>", tokenizer)
+            if stops == ["</think>"]:
+                return chunk("reason</think>", tokenizer)
+            return chunk("look</action>", tokenizer)
+
+        backend._generate_until = generate
+        turns = backend.generate_turns_training(
+            "prompt", self.skills, "put", count=1, seed_context=(2, 3, 0)
+        )
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0].decision_attempts, 3)
+        self.assertTrue(turns[0].decision_retry_used)
+        self.assertEqual(
+            turns[0].decision_failure_reasons,
+            ("max_tokens_before_accept", "max_tokens_before_accept"),
+        )
+        self.assertEqual([item[0] for item in decision_calls], [None, 0.2, 0.2])
+        self.assertEqual(len(set(item[1] for item in decision_calls)), 3)
+        self.assertEqual(
+            turns[0].decision_attempt_seeds,
+            tuple(item[1] for item in decision_calls),
+        )
+
+    def test_vllm_training_raises_typed_failure_after_bounded_attempts(self):
+        tokenizer = CharacterTokenizer()
+        backend = object.__new__(VLLMBackend)
+        backend.tokenizer = tokenizer
+        backend.cfg = GenConfig(
+            seed=19,
+            decision_max_attempts=3,
+            decision_retry_temperature=0.2,
+        )
+
+        def generate(prompt, stops, cap, temperature, *, seed, guided_regex=None):
+            if guided_regex is not None:
+                raise StructuredOutputMismatchError(
+                    chunk("repeated", tokenizer, stop=False)
+                )
+            return chunk("reason</think>", tokenizer)
+
+        backend._generate_until = generate
+        with self.assertRaises(DecisionGenerationExhausted) as caught:
+            backend.generate_turns_training(
+                "prompt", self.skills, "put", count=1, seed_context=(4, 5, 0)
+            )
+
+        self.assertEqual(len(caught.exception.attempt_records), 3)
+        self.assertEqual(caught.exception.thought.text, "reason</think>")
+        self.assertEqual(
+            [record["temperature"] for record in caught.exception.attempt_records],
+            [0.0, 0.2, 0.2],
+        )
 
 
 if __name__ == "__main__":

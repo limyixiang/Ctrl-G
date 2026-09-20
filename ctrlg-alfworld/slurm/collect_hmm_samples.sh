@@ -34,6 +34,8 @@ MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 SERVED_NAME=${SERVED_NAME:-$MODEL}
 EPISODES=${EPISODES:-3553}
 TEMPERATURE=${TEMPERATURE:-0.7}
+DECISION_MAX_ATTEMPTS=${DECISION_MAX_ATTEMPTS:-5}
+DECISION_RETRY_TEMPERATURE=${DECISION_RETRY_TEMPERATURE:-0.2}
 if [[ "${RESUME:-0}" == "1" && -z "${OUTPUT:-}" ]]; then
   echo "RESUME=1 requires OUTPUT to name the existing collection directory" >&2
   exit 2
@@ -89,6 +91,8 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --base_url "http://127.0.0.1:$PORT/v1" \
   --num_episodes "$EPISODES" \
   --temperature "$TEMPERATURE" \
+  --decision_max_attempts "$DECISION_MAX_ATTEMPTS" \
+  --decision_retry_temperature "$DECISION_RETRY_TEMPERATURE" \
   --max_hmm_sequence_tokens 640 \
   --max_thought_tokens 1024 \
   --max_decision_tokens 512 \
