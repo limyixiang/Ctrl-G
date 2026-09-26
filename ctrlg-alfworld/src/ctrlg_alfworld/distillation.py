@@ -323,6 +323,9 @@ def extract_lvd_embeddings(model, records: list[dict], *, eos_token_id: int) -> 
     """
 
     device = model.device
+    base_model = getattr(model, "base_model", None)
+    if base_model is model:
+        base_model = None
     sequence_tensors = []
     embedding_tensors = []
     for record in records:
@@ -346,18 +349,34 @@ def extract_lvd_embeddings(model, records: list[dict], *, eos_token_id: int) -> 
 
         input_ids = torch.tensor([full_ids], device=device)
         with torch.no_grad():
-            output = model(
-                input_ids=input_ids,
-                output_hidden_states=True,
-                use_cache=False,
-            )
-        hidden = output.hidden_states[-1][0]
+            if base_model is None:
+                # Lightweight test doubles and older model wrappers may not
+                # expose the Hugging Face ``base_model`` interface.
+                output = model(
+                    input_ids=input_ids,
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
+                hidden = output.hidden_states[-1][0]
+            else:
+                # Calling the causal-LM wrapper would materialize logits for
+                # every input position over the full vocabulary. Requesting
+                # all hidden states also retains every decoder layer. LVD only
+                # needs the final decoder representation, so call the base
+                # model directly to keep long prompts within GPU memory.
+                output = base_model(
+                    input_ids=input_ids,
+                    output_hidden_states=False,
+                    use_cache=False,
+                )
+                hidden = output.last_hidden_state[0]
         target_end = target_start + len(target_sequence)
         aligned = hidden[target_start - 1 : target_end - 1].detach().cpu()
         if aligned.shape[0] != len(target_sequence):
             raise RuntimeError("hidden-state/token alignment length mismatch")
         sequence_tensors.append(torch.tensor(target_sequence, dtype=torch.long))
         embedding_tensors.append(aligned)
+        del output, hidden, input_ids
 
     max_length = max(sequence.shape[0] for sequence in sequence_tensors)
     hidden_size = embedding_tensors[0].shape[-1]

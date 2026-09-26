@@ -335,6 +335,41 @@ class DistillationDataTests(unittest.TestCase):
             embeddings[0, :, 0].tolist(), [4.0, 10.0, 11.0, 20.0, 21.0]
         )
 
+    def test_embeddings_bypass_causal_lm_head(self):
+        class BaseModel:
+            def __init__(self):
+                self.called = False
+
+            def __call__(self, input_ids, output_hidden_states, use_cache):
+                self.called = True
+                self.assert_no_hidden_state_history(output_hidden_states)
+                hidden = input_ids.to(torch.float32).unsqueeze(-1)
+                return SimpleNamespace(last_hidden_state=hidden)
+
+            @staticmethod
+            def assert_no_hidden_state_history(output_hidden_states):
+                if output_hidden_states:
+                    raise AssertionError("all-layer hidden states were requested")
+
+        class CausalLM:
+            device = "cpu"
+
+            def __init__(self):
+                self.base_model = BaseModel()
+
+            def __call__(self, **kwargs):
+                raise AssertionError("causal-LM logits head was called")
+
+        model = CausalLM()
+        sequences, embeddings = extract_lvd_embeddings(
+            model, [make_record(False, 11)], eos_token_id=0
+        )
+        self.assertTrue(model.base_model.called)
+        self.assertEqual(sequences.tolist(), [[10, 11, 20, 21, 0]])
+        self.assertEqual(
+            embeddings[0, :, 0].tolist(), [4.0, 10.0, 11.0, 20.0, 21.0]
+        )
+
     def test_tokenizer_contract_rejects_added_delimiter(self):
         class Tokenizer:
             vocab_size = 128
