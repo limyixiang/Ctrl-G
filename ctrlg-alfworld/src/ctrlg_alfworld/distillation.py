@@ -85,7 +85,10 @@ def load_advance_selections(
 def validate_tokenizer_contract(tokenizer, records: list[dict]) -> None:
     """Reject tokenizer/tag/vocabulary mismatches before expensive LVD work."""
 
-    vocab_size = tokenizer.vocab_size
+    # ``tokenizer.vocab_size`` is only the base vocabulary for Hugging Face
+    # tokenizers. Special tokens may be added above that range (Qwen3.5's EOS
+    # is one example), so the HMM must use the complete tokenizer size.
+    vocab_size = len(tokenizer)
     eos_token_id = tokenizer.eos_token_id
     if vocab_size is None or eos_token_id is None:
         raise ValueError("tokenizer must define vocab_size and eos_token_id")

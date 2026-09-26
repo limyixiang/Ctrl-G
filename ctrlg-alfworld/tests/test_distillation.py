@@ -340,6 +340,9 @@ class DistillationDataTests(unittest.TestCase):
             vocab_size = 128
             eos_token_id = 0
 
+            def __len__(self):
+                return 129
+
             def get_added_vocab(self):
                 return {"<action>": 128}
 
@@ -351,9 +354,27 @@ class DistillationDataTests(unittest.TestCase):
             vocab_size = 64
             eos_token_id = 0
 
+            def __len__(self):
+                return 64
+
             def get_added_vocab(self):
                 return {}
 
         record = make_record(False, 70)
         with self.assertRaisesRegex(ValueError, "outside HMM vocabulary"):
             validate_tokenizer_contract(Tokenizer(), [record])
+
+    def test_tokenizer_contract_accepts_added_eos_token(self):
+        class Tokenizer:
+            vocab_size = 64
+            eos_token_id = 65
+
+            def __len__(self):
+                return 66
+
+            def get_added_vocab(self):
+                return {"<eos>": 65}
+
+        record = make_record(False, 11)
+        record["hmm_sequence_token_ids"][-1] = 65
+        validate_tokenizer_contract(Tokenizer(), [record])

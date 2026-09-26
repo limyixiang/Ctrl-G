@@ -32,7 +32,7 @@ cp "$DATA_DIR/${DATASET}.metadata.json" "$OUTPUT/training_data_metadata.json"
 
 read -r VOCAB_SIZE EOS_TOKEN_ID < <(
   python -c \
-    "from transformers import AutoTokenizer; t=AutoTokenizer.from_pretrained('$MODEL'); print(t.vocab_size, t.eos_token_id)"
+    "from transformers import AutoTokenizer; t=AutoTokenizer.from_pretrained('$MODEL'); print(len(t), t.eos_token_id)"
 )
 
 python distillation/lvd_hmm.py \
