@@ -144,8 +144,13 @@ def main():
 
     lvd_records = train_records[: min(args.lvd_samples, len(train_records))]
     if args.save_embeddings:
+        # Qwen3.5 attention can otherwise select cuDNN SDPA, which is unusable
+        # on clusters whose loaded cuDNN sublibraries do not have matching
+        # versions. Keep Flash/Efficient/Math SDPA available, as the rollout
+        # backend does, and disable only the failing cuDNN implementation.
+        torch.backends.cuda.enable_cudnn_sdp(False)
         model = AutoModelForCausalLM.from_pretrained(
-            args.model, torch_dtype=getattr(torch, args.dtype)
+            args.model, dtype=getattr(torch, args.dtype)
         ).to("cuda")
         model.eval()
         lvd_sequences, lvd_embeddings = extract_lvd_embeddings(
