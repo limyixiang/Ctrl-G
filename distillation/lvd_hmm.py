@@ -1,6 +1,5 @@
 import argparse
 
-import faiss
 import numpy
 import torch
 
@@ -19,7 +18,7 @@ def init():
     arg_parser.add_argument('--kmeans_sample_size', default=262144, type=int,
         help='maximum number of non-initial token embeddings used to fit centroids')
     arg_parser.add_argument('--assignment_batch_size', default=8192, type=int,
-        help='number of embeddings converted to float32 for each FAISS search')
+        help='number of embeddings processed in each centroid fitting or assignment batch')
     arg_parser.add_argument('--pseudocount', default=0.001, type=float)
     arg_parser.add_argument('--seed', default=42, type=int)
     arg_parser.add_argument('--output_file', required=True)
@@ -29,6 +28,8 @@ def init():
         arg_parser.error('--hidden_states must be at least 2')
     if args.kmeans_sample_size <= 0 or args.assignment_batch_size <= 0:
         arg_parser.error('sample and assignment batch sizes must be positive')
+    if args.kmeans_iterations <= 0:
+        arg_parser.error('--kmeans_iterations must be positive')
     return args
 
 
@@ -82,14 +83,66 @@ def sample_training_vectors(embeddings, lengths, sample_size, batch_size, seed):
     return gather_vectors(embeddings, rows, positions, batch_size)
 
 
-def Kmeans_faiss(vecs, K, max_iterations=1000, nredo=1, verbose=True, seed=42):
+def nearest_centroids(vectors, centroids, centroid_norms):
+    # ||x - c||^2 = ||x||^2 + ||c||^2 - 2*x.c. The first term is identical
+    # for every centroid, so it is unnecessary when choosing the closest one.
+    distances = vectors @ centroids.T
+    distances.mul_(-2).add_(centroid_norms[None, :])
+    return distances.argmin(dim=1)
+
+
+class TorchKmeans:
+    def __init__(self, centroids):
+        self.centroids = centroids.contiguous()
+        self.centroid_norms = self.centroids.square().sum(dim=1)
+
+    @property
+    def index(self):
+        # Retain the search interface used by assign_clusters.
+        return self
+
+    def search(self, vectors, k):
+        if k != 1:
+            raise ValueError('only the nearest centroid is supported')
+        with torch.no_grad():
+            batch = torch.as_tensor(vectors, device=self.centroids.device)
+            labels = nearest_centroids(batch, self.centroids,
+                self.centroid_norms)
+            return None, labels.cpu().numpy()[:, None]
+
+
+def Kmeans_torch(vecs, K, max_iterations=100, batch_size=8192, seed=42):
     if len(vecs) < K:
         raise ValueError(f'K-means needs at least {K} training vectors; got {len(vecs)}')
-    kmeans = faiss.Kmeans(vecs.shape[1], K,
-        niter=max_iterations, nredo=nredo, verbose=verbose,
-        max_points_per_centroid=max(1, vecs.shape[0] // K), gpu=True, seed=seed)
-    kmeans.train(vecs)
-    return kmeans
+    if not torch.cuda.is_available():
+        raise RuntimeError('PyTorch CUDA is required for K-means on this GPU job')
+
+    rng = numpy.random.default_rng(seed)
+    device = torch.device('cuda')
+    with torch.no_grad():
+        data = torch.as_tensor(vecs, device=device)
+        initial = rng.choice(len(vecs), size=K, replace=False)
+        centroids = data[torch.as_tensor(initial, device=device)].clone()
+        ones = torch.ones(batch_size, dtype=torch.int32, device=device)
+
+        for _ in tqdm(range(max_iterations), desc='fitting K-means centroids'):
+            centroid_norms = centroids.square().sum(dim=1)
+            sums = torch.zeros_like(centroids)
+            counts = torch.zeros(K, dtype=torch.int32, device=device)
+            for start in range(0, len(data), batch_size):
+                batch = data[start:start + batch_size]
+                labels = nearest_centroids(batch, centroids, centroid_norms)
+                sums.index_add_(0, labels, batch)
+                counts.index_add_(0, labels, ones[:len(batch)])
+
+            occupied = counts > 0
+            centroids[occupied] = sums[occupied] / counts[occupied].unsqueeze(1)
+            empty = torch.where(~occupied)[0]
+            if len(empty):
+                replacements = rng.integers(len(data), size=len(empty))
+                centroids[empty] = data[torch.as_tensor(replacements, device=device)]
+
+        return TorchKmeans(centroids)
 
 
 def assign_clusters(kmeans, seqs, embeddings, offsets, batch_size):
@@ -168,8 +221,9 @@ def main():
         args.kmeans_sample_size, args.assignment_batch_size, args.seed)
     print(f'training K-means with {hidden_states - 1} clusters and '
         f'{len(vecs)} sampled embeddings ...', flush=True)
-    kmeans = Kmeans_faiss(vecs, hidden_states - 1,
-        max_iterations=args.kmeans_iterations, seed=args.seed)
+    kmeans = Kmeans_torch(vecs, hidden_states - 1,
+        max_iterations=args.kmeans_iterations,
+        batch_size=args.assignment_batch_size, seed=args.seed)
     del vecs
 
     print(f'clustering all {offsets[-1]} non-EOS embeddings ...', flush=True)
