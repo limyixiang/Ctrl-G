@@ -60,11 +60,27 @@ torchrun --standalone --nproc_per_node=1 distillation/train_hmm.py \
   --seed "$SEED" \
   --log_file "$OUTPUT/train.log"
 
-FINAL_CHECKPOINT=${FINAL_CHECKPOINT:-$(
+SCHEDULED_FINAL_CHECKPOINT=$(
   python -c 'import sys; print(sum(int(a) * int(b) for a, b in (part.split(",") for part in sys.argv[1].split(";") if part)))' "$EM_SCHEDULE"
-)}
+)
+BEST_CHECKPOINT=$(
+  python ctrlg-alfworld/scripts/select_best_hmm_checkpoint.py \
+    --log "$OUTPUT/train.log" \
+    --model-path "$OUTPUT" \
+    --out "$OUTPUT/checkpoint_selection.json"
+)
+# EVAL_CHECKPOINT is an explicit escape hatch. FINAL_CHECKPOINT remains a
+# backwards-compatible alias for existing job submissions.
+EVAL_CHECKPOINT=${EVAL_CHECKPOINT:-${FINAL_CHECKPOINT:-$BEST_CHECKPOINT}}
+if [[ ! -d "$OUTPUT/checkpoint-$EVAL_CHECKPOINT" ]]; then
+  echo "selected checkpoint does not exist: $OUTPUT/checkpoint-$EVAL_CHECKPOINT" >&2
+  exit 1
+fi
+echo "scheduled final checkpoint: $SCHEDULED_FINAL_CHECKPOINT"
+echo "best saved checkpoint by dev log-likelihood: $BEST_CHECKPOINT"
+echo "evaluating checkpoint: $EVAL_CHECKPOINT"
 python ctrlg-alfworld/scripts/evaluate_hmm_fit.py \
-  --hmm "$OUTPUT/checkpoint-$FINAL_CHECKPOINT" \
+  --hmm "$OUTPUT/checkpoint-$EVAL_CHECKPOINT" \
   --data-dir "$DATA_DIR" \
   --dataset "$DATASET" \
   --batch-size "$BATCH_SIZE" \
