@@ -642,41 +642,36 @@ def rank_generated_ids(base_model, generated_ids, prompt_ids, suffix_ids,
     """Sort candidate generations best-first by the base model's score for prompt + candidate + suffix.
 
     The HMM only approximates the base LLM, so the constrained samples are re-scored by the
-    LLM itself. logits_mask picks which positions count towards the score (see the flags
-    above); norms applies the length penalty, and the candidates come back sorted descending.
+    LLM itself. Only generated/suffix positions count towards the score (see the flags
+    above); the length penalty is applied before sorting. Score one candidate at a time
+    so a long prompt and several beams do not materialize a batch of full-vocabulary logits.
     """
     device = base_model.device
     suffix_ids = suffix_ids[:suffix_length_cap]
 
-    # preprocessing input_ids
-    input_ids, logits_mask = [], []
-    for generated in generated_ids:
-        input_ids.append(list(prompt_ids) + list(generated) + list(suffix_ids))
-        if suffix_logits_only:
-            logits_mask.append([0.0] * len(prompt_ids) + [0.0] * len(generated) + [1.0] * len(suffix_ids))
-        else:
-            logits_mask.append([0.0] * len(prompt_ids) + [1.0] * len(generated) + [1.0] * len(suffix_ids))
+    def score_candidate(generated):
+        sequence = list(prompt_ids) + list(generated) + list(suffix_ids)
+        # Position zero has no preceding causal logit, matching the original
+        # mask[:, 1:] behavior when the caller supplies an empty prompt.
+        scored_from = max(
+            1, len(prompt_ids) + (len(generated) if suffix_logits_only else 0)
+        )
+        input_ids = torch.tensor([sequence], device=device)
+        target_ids = input_ids[:, scored_from:]
+        if target_ids.numel() == 0:
+            raise ValueError("cannot rank candidates with no scored tokens")
 
-    max_len = max([len(x) for x in input_ids])
-    input_ids = [x + [0] * (max_len - len(x)) for x in input_ids]
-    input_ids = torch.tensor(input_ids, device=device)
-    logits_mask = [x + [0.0] * (max_len - len(x)) for x in logits_mask]
-    logits_mask = torch.tensor(logits_mask, device=device)
+        # A causal logit at position t-1 predicts token t. The model still reads
+        # the whole prompt, but softmax only needs the positions being scored.
+        with torch.no_grad():
+            logits = base_model(input_ids, use_cache=False).logits[
+                :, scored_from - 1 : -1, :
+            ]
+            log_probs = torch.log_softmax(logits, dim=-1)
+            token_log_probs = log_probs.gather(
+                -1, target_ids.unsqueeze(-1)
+            ).squeeze(-1)
+            return (token_log_probs.sum() / (target_ids.numel() ** length_penalty)).item()
 
-    # llm forward
-    n, d = input_ids.shape
-    with torch.no_grad():
-        logits = base_model(input_ids).logits[:, :-1, :]
-        logits = torch.log_softmax(logits, dim=-1)
-        log_probs = logits[
-            torch.arange(n)[:, None],
-            torch.arange(d-1)[None, :],
-            input_ids[:, 1:]]
-
-    norms = torch.sum(logits_mask[:, 1:], dim=-1) ** length_penalty
-    log_probs = torch.sum(log_probs * logits_mask[:, 1:], dim=-1) / norms
-
-    generated_ids_sorted = [a for a, b in 
-        sorted([(x, y) for x,y in zip(generated_ids, log_probs.tolist())], key=lambda x: x[1], reverse=True)]
-
-    return generated_ids_sorted
+    scored = [(generated, score_candidate(generated)) for generated in generated_ids]
+    return [generated for generated, _ in sorted(scored, key=lambda item: item[1], reverse=True)]

@@ -546,6 +546,9 @@ class HFBackend(BaseBackend):
             suffix_ids,
             self.hmm_model.eos_token_id,
         )
+        # The Ctrl-G processor keeps large DFA/HMM lookahead caches that are no
+        # longer needed while the base model reranks completed candidates.
+        del processor, dfa_model, outputs
         candidates = ctrlg.rank_generated_ids(
             self.model, candidates, prompt_ids, suffix_ids
         )
