@@ -373,6 +373,13 @@ class HardDFALogitsProcessor:
             state = self.graph["initial_state"]
             for token in generated:
                 state = int(self.table[state][token])
+            # Beam search retains placeholder beams when fewer than num_beams
+            # tokens are legal (common in fixed portions of a schema). Their
+            # scores are -inf, but generate() still calls this processor on
+            # their impossible prefixes. Leave those rows masked so they can
+            # never outrank a live beam.
+            if state == dead:
+                continue
             if state in self.graph["accept_states"]:
                 masked[row_index, self.eos_token_id] = scores[row_index, self.eos_token_id]
                 continue
@@ -382,9 +389,11 @@ class HardDFALogitsProcessor:
                 (targets != dead) & (distance_vector[targets] <= remaining_after)
             )
             if allowed.size == 0:
-                raise RuntimeError("DFA has no accepting continuation within budget")
+                continue
             indices = torch.as_tensor(allowed, device=scores.device, dtype=torch.long)
             masked[row_index, indices] = scores[row_index, indices]
+        if not torch.isfinite(masked).any():
+            raise RuntimeError("DFA has no accepting continuation within budget")
         return masked
 
 

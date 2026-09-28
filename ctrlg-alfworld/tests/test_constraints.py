@@ -135,6 +135,22 @@ class ConstraintTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within the token budget"):
             HardDFALogitsProcessor(graph, 1, len(ids) - 1, 0)
 
+    def test_dead_beam_does_not_abort_live_dfa_beam(self):
+        graph = lift_character_fsm(regex_fsm(re.escape("look</action>")), self.tokenizer)
+        ids = self.tokenizer.encode("look</action>")
+        processor = HardDFALogitsProcessor(graph, 1, len(ids), 0)
+        # A forced first token leaves beam search with one live beam and
+        # placeholder beams whose impossible tokens already have -inf scores.
+        beams = torch.tensor([[ord("X"), ids[0]], [ord("X"), ord("z")]])
+        masked = processor(beams, torch.zeros((2, len(self.tokenizer))))
+        self.assertEqual(
+            torch.isfinite(masked[0]).nonzero().flatten().tolist(), [ids[1]]
+        )
+        self.assertFalse(torch.isfinite(masked[1]).any())
+
+        with self.assertRaisesRegex(RuntimeError, "no accepting continuation"):
+            processor(beams[1:], torch.zeros((1, len(self.tokenizer))))
+
     def test_prompt_boundary_continuation_is_exact(self):
         ids = tokenize_continuation(
             self.tokenizer, "prompt<action>", "look</action>"
