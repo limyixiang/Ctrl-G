@@ -109,3 +109,5 @@ python ctrlg-alfworld/scripts/evaluate_hmm_fit.py \
   --dataset "$DATASET" \
   --batch-size "$BATCH_SIZE" \
   --out "$OUTPUT/held_out_fit.json"
+
+# DATA_DIR=results/alfworld/hmm_data_9b MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_model_9b sbatch ctrlg-alfworld/slurm/train_hmm.sh

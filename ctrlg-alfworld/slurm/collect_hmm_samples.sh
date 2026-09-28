@@ -16,7 +16,7 @@
 # MAcdmples.sh
 
 # Example:
-# MODEL=Qwen/Qwen3.5-9B OVERWRITE=1 EPISODES=100 OUTPUT=results/alfworld/9b_policy_hmm sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MODEL=Qwen/Qwen3.5-9B OVERWRITE=1 EPISODES=3 OUTPUT=results/alfworld/9b_policy_hmm sbatch -p gpu -t 03:00:00 ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 set -euo pipefail
 
