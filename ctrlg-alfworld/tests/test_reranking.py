@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import torch
 
-from ctrlg import rank_generated_ids
+from ctrlg import extract_generated_ids, rank_generated_ids
 
 
 class TinyCausalModel:
@@ -24,6 +24,23 @@ class TinyCausalModel:
 
 
 class RerankingTests(unittest.TestCase):
+    def test_extract_stops_at_first_generated_eos(self):
+        outputs = [
+            [42, 11, 12, 0, 36, 36],
+            [42, 11, 12, 0, 0, 0],
+        ]
+
+        extracted = extract_generated_ids(outputs, [42], [0], 0)
+
+        self.assertEqual(extracted, [(11, 12), (11, 12)])
+
+    def test_extract_keeps_suffix_overlap_before_eos(self):
+        extracted = extract_generated_ids(
+            [[42, 11, 12, 99, 0, 36]], [42], [99, 0], 0
+        )
+
+        self.assertEqual(extracted, [(11, 12)])
+
     def test_scores_candidates_individually_and_keeps_length_normalized_order(self):
         model = TinyCausalModel()
         candidates = [(5,), (3,), (3, 8)]

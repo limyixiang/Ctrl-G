@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from ctrlg_alfworld.backends import (
     BaseBackend,
@@ -10,6 +11,7 @@ from ctrlg_alfworld.backends import (
     StructuredOutputMismatchError,
     VLLMBackend,
 )
+from ctrlg_alfworld.constraints import build_trie_dfa
 from ctrlg_alfworld.generation import GeneratedChunk, TurnGeneration, parse_turn
 from ctrlg_alfworld.prompts import ACTION_CLOSE
 from ctrlg_alfworld.skills import SkillSet
@@ -115,6 +117,48 @@ class BackendIntegrationTests(unittest.TestCase):
         self.assertIn("preserve_target_lexical_type", turn.activated_policies)
         self.assertEqual(turn.parsed.action, "inventory")
         self.assertNotIn("admissible", repr(seen))
+
+    def test_hmm_reranks_only_completed_policy_actions(self):
+        import torch
+
+        tokenizer = CharacterTokenizer()
+        valid = tokenizer.encode("look</action>")
+        invalid = tokenizer.encode("lookx</action>")
+        graph = build_trie_dfa([valid], len(tokenizer))
+        rows = [
+            tokenizer.encode("P") + valid + [0, ord("$"), ord("$")],
+            tokenizer.encode("P") + invalid + [0],
+        ]
+        width = max(map(len, rows))
+
+        class Model:
+            def generate(self, **kwargs):
+                return torch.tensor([row + [0] * (width - len(row)) for row in rows])
+
+        backend = object.__new__(HFBackend)
+        backend.tokenizer = tokenizer
+        backend.model = Model()
+        backend.hmm_model = SimpleNamespace(eos_token_id=0)
+        backend.vocab_size = len(tokenizer)
+        backend.device = "cpu"
+        backend.cfg = GenConfig(beam_size=2)
+
+        ranked_inputs = []
+
+        def rank(_model, candidates, _prompt, _suffix):
+            ranked_inputs.extend(candidates)
+            return candidates
+
+        with (
+            patch("ctrlg.DFAModel") as dfa_class,
+            patch("ctrlg.ConstraintLogitsProcessor"),
+            patch("ctrlg.rank_generated_ids", side_effect=rank),
+        ):
+            dfa_class.return_value.to.return_value = object()
+            chunk = backend._generate_hmm_span("P", graph, [])
+
+        self.assertEqual(ranked_inputs, [tuple(valid)])
+        self.assertEqual(chunk.text, "look</action>")
 
     def test_vllm_sends_structured_regex_and_preserves_token_ids(self):
         tokenizer = CharacterTokenizer()

@@ -549,6 +549,16 @@ class HFBackend(BaseBackend):
         # The Ctrl-G processor keeps large DFA/HMM lookahead caches that are no
         # longer needed while the base model reranks completed candidates.
         del processor, dfa_model, outputs
+        # Beam search can also return incomplete or impossible beams. They must
+        # not win the base-model rerank even if their raw likelihood is high.
+        candidates = [
+            candidate for candidate in candidates
+            if dfa_accepts(dfa_graph, candidate)
+        ]
+        if not candidates:
+            raise RuntimeError(
+                "Ctrl-G produced no completed action accepted by the policy action DFA"
+            )
         candidates = ctrlg.rank_generated_ids(
             self.model, candidates, prompt_ids, suffix_ids
         )

@@ -604,9 +604,11 @@ class ConstraintLogitsProcessor(LogitsProcessor):
 def extract_generated_ids(outputs, prompt_ids, suffix_ids, eos_token_id):
     """Strip the parts that were not generated from each sequence in `outputs`.
 
-    Removes the prompt from the front and any trailing eos tokens, then removes the longest
-    prefix of suffix_ids that the sequence ends with -- generation may stop anywhere inside
-    the suffix, so the overlap length varies per sequence. Returns a list of token id tuples.
+    Removes the prompt from the front and stops at the first generated EOS token.
+    Beam outputs can contain padding or other tokens after EOS. Then removes the
+    longest prefix of suffix_ids that the sequence ends with -- generation may
+    stop anywhere inside the suffix, so the overlap length varies per sequence.
+    Returns a list of token id tuples.
     """
     processed_outputs = []
 
@@ -616,10 +618,9 @@ def extract_generated_ids(outputs, prompt_ids, suffix_ids, eos_token_id):
     prompt_ids = tuple(prompt_ids)
 
     for output_ids in outputs:
-        output_ids = tuple(output_ids)
-        while output_ids[-1] == eos_token_id:
-            output_ids = output_ids[:-1]
-        output_ids = output_ids[len(prompt_ids):]
+        output_ids = tuple(output_ids[len(prompt_ids):])
+        if eos_token_id in output_ids:
+            output_ids = output_ids[:output_ids.index(eos_token_id)]
 
         l = 0
         for k in range(1, min(len(output_ids), len(suffix_ids))+1):
