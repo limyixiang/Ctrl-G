@@ -25,6 +25,7 @@ export TOKENIZERS_PARALLELISM=false
 MODEL=${MODEL:-$WORKDIR/models/Qwen3.5-9B}
 OUTPUT=${OUTPUT:-results/alfworld/pair_${SLURM_ARRAY_JOB_ID}}
 EPISODES=${EPISODES:-134}
+BEAM_SIZE=${BEAM_SIZE:-1}
 SEED=${SEED:-42}
 CONDITIONS=(decision_prompt decision_ctrlg)
 CONDITION=${CONDITIONS[$SLURM_ARRAY_TASK_ID]}
@@ -39,5 +40,6 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --condition "$CONDITION" \
   "${HMM_ARGS[@]}" \
   --num_episodes "$EPISODES" \
+  --beam_size "$BEAM_SIZE" \
   --seed "$SEED" \
   --out "$OUTPUT"

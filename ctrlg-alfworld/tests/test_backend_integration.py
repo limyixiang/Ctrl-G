@@ -118,7 +118,7 @@ class BackendIntegrationTests(unittest.TestCase):
         self.assertEqual(turn.parsed.action, "inventory")
         self.assertNotIn("admissible", repr(seen))
 
-    def test_hmm_reranks_only_completed_policy_actions(self):
+    def test_hmm_skips_reranking_when_only_one_policy_action_remains(self):
         import torch
 
         tokenizer = CharacterTokenizer()
@@ -143,21 +143,15 @@ class BackendIntegrationTests(unittest.TestCase):
         backend.device = "cpu"
         backend.cfg = GenConfig(beam_size=2)
 
-        ranked_inputs = []
-
-        def rank(_model, candidates, _prompt, _suffix):
-            ranked_inputs.extend(candidates)
-            return candidates
-
         with (
             patch("ctrlg.DFAModel") as dfa_class,
             patch("ctrlg.ConstraintLogitsProcessor"),
-            patch("ctrlg.rank_generated_ids", side_effect=rank),
+            patch("ctrlg.rank_generated_ids") as rank,
         ):
             dfa_class.return_value.to.return_value = object()
             chunk = backend._generate_hmm_span("P", graph, [])
 
-        self.assertEqual(ranked_inputs, [tuple(valid)])
+        rank.assert_not_called()
         self.assertEqual(chunk.text, "look</action>")
 
     def test_vllm_sends_structured_regex_and_preserves_token_ids(self):

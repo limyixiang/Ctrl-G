@@ -9,7 +9,7 @@ experiment:
   max_decision_tokens: 512
   max_action_tokens: 32
   min_action_tokens: 1
-  beam_size: 8
+  beam_size: 1
   temperature: 1.0
   rollout_temperature: 0.7
   max_hmm_prefix_tokens: null

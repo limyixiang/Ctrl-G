@@ -805,9 +805,11 @@ class WordCountBuilder:
 
 class DFAModel(nn.Module):
     """A DFA compiled into tensors, for masking/scoring token transitions during generation."""
-    def __init__(self, dfa_graph, vocab_size):
+    def __init__(self, dfa_graph, vocab_size, dense_token_mask=True):
         """Index the states and edges of dfa_graph and register the state/edge/token masks
-        (VE_mask, EV_mask, T_mask, E2Src, E2Dst) as non-trainable buffers."""
+        (VE_mask, EV_mask, T_mask, E2Src, E2Dst) as non-trainable parameters.
+        The sparse constraint processor can omit the large edge/token mask.
+        """
         super().__init__()
 
         edges = dfa_graph['edges']
@@ -835,7 +837,7 @@ class DFAModel(nn.Module):
         G = {}
         VE_mask = torch.zeros(state_cnt, edge_cnt)
         EV_mask = torch.zeros(edge_cnt, state_cnt)
-        T_mask = torch.zeros(edge_cnt, vocab_size)
+        T_mask = torch.zeros(edge_cnt, vocab_size) if dense_token_mask else None
         E2Src = torch.tensor([0] * edge_cnt)
         E2Dst = torch.tensor([0] * edge_cnt)
         for e in edges:
@@ -844,7 +846,8 @@ class DFAModel(nn.Module):
             edge_idx = edge2idx[(u_idx, v_idx)]
             VE_mask[u_idx, edge_idx] = 1.0
             EV_mask[edge_idx, v_idx] = 1.0
-            T_mask[edge_idx, torch.from_numpy(transition)] = 1.0
+            if T_mask is not None:
+                T_mask[edge_idx, torch.from_numpy(transition)] = 1.0
             E2Src[edge_idx] = u_idx
             E2Dst[edge_idx] = v_idx
 
@@ -855,7 +858,7 @@ class DFAModel(nn.Module):
 
         self.VE_mask = nn.Parameter(VE_mask, requires_grad=False)
         self.EV_mask = nn.Parameter(EV_mask, requires_grad=False)
-        self.T_mask = nn.Parameter(T_mask, requires_grad=False)
+        self.T_mask = nn.Parameter(T_mask, requires_grad=False) if T_mask is not None else None
         self.E2Src = nn.Parameter(E2Src, requires_grad=False)
         self.E2Dst = nn.Parameter(E2Dst, requires_grad=False)
 

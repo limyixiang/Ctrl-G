@@ -31,6 +31,7 @@ export TOKENIZERS_PARALLELISM=false
 CONDITION=${1:-decision_prompt}
 EPISODES=${2:-134}
 MAX_STEPS=${3:-50}
+BEAM_SIZE=${BEAM_SIZE:-1}
 MODEL=${MODEL:-$WORKDIR/models/Qwen3.5-9B}
 OUTPUT=${OUTPUT:-results/alfworld/single_${CONDITION}_${SLURM_JOB_ID}}
 HMM_ARGS=()
@@ -45,4 +46,5 @@ python ctrlg-alfworld/scripts/run_eval.py \
   "${HMM_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --max_steps "$MAX_STEPS" \
+  --beam_size "$BEAM_SIZE" \
   --out "$OUTPUT"

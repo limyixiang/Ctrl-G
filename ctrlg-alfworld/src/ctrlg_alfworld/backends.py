@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -40,6 +41,8 @@ from .skills import SkillSet
 
 torch.backends.cuda.enable_cudnn_sdp(False)
 
+ACTION_DFA_CACHE_SIZE = 4
+
 
 def _synchronize_if_cuda(device) -> None:
     if torch.cuda.is_available() and str(device).startswith("cuda"):
@@ -70,7 +73,7 @@ class GenConfig:
     max_decision_tokens: int = 512
     max_action_tokens: int = 32
     min_action_tokens: int = 1
-    beam_size: int = 8
+    beam_size: int = 1
     do_sample: bool = False
     temperature: float = 1.0
     rollout_temperature: float = 0.7
@@ -386,7 +389,7 @@ class HFBackend(BaseBackend):
         dtype = dtype or torch.bfloat16
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path, torch_dtype=dtype
+            model_name_or_path, dtype=dtype
         ).to(device)
         self.model.eval()
         self.device = device
@@ -425,6 +428,8 @@ class HFBackend(BaseBackend):
                 max_new_tokens=max_new_tokens,
                 do_sample=do_sample,
                 temperature=temperature if do_sample else None,
+                num_beams=1,
+                num_return_sequences=1,
                 stopping_criteria=StoppingCriteriaList([stopper]),
                 pad_token_id=self.tokenizer.eos_token_id,
             )
@@ -507,7 +512,9 @@ class HFBackend(BaseBackend):
         import ctrlg
 
         prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        dfa_model = ctrlg.DFAModel(dfa_graph, self.vocab_size).to(self.device)
+        dfa_model = ctrlg.DFAModel(
+            dfa_graph, self.vocab_size, dense_token_mask=False
+        ).to(self.device)
         suffix_ids = [self.hmm_model.eos_token_id]
 
         processor = ctrlg.ConstraintLogitsProcessor(
@@ -559,9 +566,10 @@ class HFBackend(BaseBackend):
             raise RuntimeError(
                 "Ctrl-G produced no completed action accepted by the policy action DFA"
             )
-        candidates = ctrlg.rank_generated_ids(
-            self.model, candidates, prompt_ids, suffix_ids
-        )
+        if len(candidates) > 1:
+            candidates = ctrlg.rank_generated_ids(
+                self.model, candidates, prompt_ids, suffix_ids
+            )
         selected_ids = tuple(candidates[0])
         if not dfa_accepts(dfa_graph, selected_ids):
             decoded = self.tokenizer.decode(
@@ -636,7 +644,7 @@ class HFBackend(BaseBackend):
         )
         policy = compile_policy_language(decision_fields, skillset)
         if not hasattr(self, "_action_dfa_cache"):
-            self._action_dfa_cache = {}
+            self._action_dfa_cache = OrderedDict()
         policy_key = (
             getattr(self.tokenizer, "name_or_path", type(self.tokenizer).__name__),
             skillset.content_sha256, policy.required_action, policy.forbidden_action,
@@ -646,6 +654,10 @@ class HFBackend(BaseBackend):
         if action_graph is None:
             action_graph = lift_character_fsm(policy.fsm, self.tokenizer, self.vocab_size)
             self._action_dfa_cache[policy_key] = action_graph
+            if len(self._action_dfa_cache) > ACTION_DFA_CACHE_SIZE:
+                self._action_dfa_cache.popitem(last=False)
+        else:
+            self._action_dfa_cache.move_to_end(policy_key)
 
         try:
             prefix_ids = hmm_prefix_token_ids(

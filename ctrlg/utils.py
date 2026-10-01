@@ -18,10 +18,10 @@ the "vertices" V and its transitions are the "edges" E:
         VE_mask[u, e] = 1 iff edge e leaves state u.
     EV_mask -- Edge-to-Vertex incidence, num_transitions * num_states;
         EV_mask[e, v] = 1 iff edge e enters state v.
-    T_mask  -- Token mask, num_transitions * vocab_size; T_mask[e, w] = 1 iff token w
-        is a valid label for edge e.
+    T_mask  -- Optional dense token mask, num_transitions * vocab_size;
+        T_mask[e, w] = 1 iff token w is a valid label for edge e.
     E2Src / E2Dst -- Edge-to-Source / Edge-to-Destination state index, num_transitions.
-    T_weights -- per-edge emission weight derived from T_mask and beta,
+    T_weights -- per-edge emission weight derived from edge labels and beta,
         num_transitions * hidden_states (see ConstraintLogitsProcessor.__init__).
 
 The four caches of ConstraintLogitsProcessor (A/B/C/D name the order in which __init__
@@ -34,6 +34,8 @@ builds them; A and B are the usual HMM forward/backward messages):
 Everything is in log space unless the name says otherwise (the _exp suffix), and
 neginf = -1e30 stands in for log(0) so that arithmetic stays finite.
 """
+
+import inspect
 
 import torch
 from transformers import LogitsProcessor
@@ -73,7 +75,6 @@ def matmul_log(A, B):
     return C
 
 
-@torch.compile
 def matmul_loga_b(A, B):
     """Mixed matmul, A in log space and B in probability space: returns log(exp(A) @ B)."""
     A_max = torch.amax(A, dim=-1, keepdim=True)
@@ -86,7 +87,6 @@ def matmul_loga_b(A, B):
     return C
 
 
-@torch.compile
 def matmul_a_logb(A, B):
     """Mixed matmul, A in probability space and B in log space: returns log(A @ exp(B))."""
     bd = len(B.shape) - 2
@@ -100,7 +100,6 @@ def matmul_a_logb(A, B):
     return C
 
 
-@torch.compile
 def distribute_state_weights(E2D, y):
     """Copy a per-state weight vector out onto the edges: out[e, :] = y[E2D[e], :].
 
@@ -115,7 +114,6 @@ def distribute_state_weights(E2D, y):
             torch.arange(0, hidden_states, device=device)[None, :]]
 
 
-@torch.compile
 def aggregate_edge_weights(E2S, y, num_states):
     """Sum per-edge weights back into their states, in log space:
     out[u, :] = logsumexp over every edge e with E2S[e] == u of y[e, :].
@@ -286,17 +284,56 @@ class ConstraintLogitsProcessor(LogitsProcessor):
             y = y + beta[:, suffix_ids[t]]
             B_cache[t, :] = y
 
-        # compute T_weights -- collapse each DFA edge's set of allowed tokens into a single
-        # emission weight: T_weights[e, i] = log P(the HMM emits some token labelling edge e
-        # | z = i) = log sum over those tokens of exp(beta[i, w]). Edges labelled with no
-        # token log to -inf, hence the nan_to_num_.
-        T_mask = dfa_model.T_mask
-        VE_mask = dfa_model.VE_mask
-        EV_mask = dfa_model.EV_mask
-        E2Src, E2Dst = dfa_model.E2Src, dfa_model.E2Dst
+        # States with no path to acceptance contribute no probability mass.
+        # In ALFWorld's trie, nearly all vocabulary tokens enter such a state.
+        reverse_edges = {state: set() for state in range(num_states)}
+        for source, edges in dfa_model.G.items():
+            for destination, _ in edges:
+                reverse_edges[destination].add(source)
+        live_states = set(dfa_model.accept_states)
+        pending = list(live_states)
+        while pending:
+            for source in reverse_edges[pending.pop()]:
+                if source not in live_states:
+                    live_states.add(source)
+                    pending.append(source)
+        edge_tokens = {
+            (source, destination): transition.nonzero()[0]
+            for source, edges in dfa_model.G.items()
+            for destination, transition in edges
+            if destination in live_states
+        }
+        self.live_edges = {
+            source: [
+                (destination, edge_tokens[(source, destination)])
+                for destination, _ in edges
+                if destination in live_states
+            ]
+            for source, edges in dfa_model.G.items()
+        }
 
-        T_weights = matmul_a_logb(T_mask, torch.transpose(beta, 0, 1)) # num_transitions * hidden_states
-        T_weights.nan_to_num_(neginf=neginf)
+        # T_weights[e, i] is the log probability that HMM state i emits any
+        # token on edge e. Work from token labels instead of multiplying a dense
+        # edge/vocabulary mask against the full emission matrix.
+        E2Src, E2Dst = dfa_model.E2Src, dfa_model.E2Dst
+        T_weights = torch.full((len(E2Src), hidden_states), neginf, device=device)
+        singleton_edges, singleton_tokens = [], []
+        for edge_idx, (source, destination) in enumerate(zip(E2Src.tolist(), E2Dst.tolist())):
+            tokens = edge_tokens.get((source, destination))
+            if tokens is None or len(tokens) == 0:
+                continue
+            if len(tokens) == 1:
+                singleton_edges.append(edge_idx)
+                singleton_tokens.append(int(tokens[0]))
+                continue
+            weight = None
+            for start in range(0, len(tokens), 1024):
+                token_ids = torch.as_tensor(tokens[start:start + 1024], device=device)
+                chunk_weight = torch.logsumexp(beta.index_select(1, token_ids), dim=1)
+                weight = chunk_weight if weight is None else torch.logaddexp(weight, chunk_weight)
+            T_weights[edge_idx] = weight
+        if singleton_edges:
+            T_weights[singleton_edges] = beta[:, singleton_tokens].transpose(0, 1)
 
         # initialize cache C -- the backward pass over the DFA, one layer per remaining token.
         # C[t, v, i] = log P(the generation runs for exactly t more tokens, walking the DFA
@@ -424,8 +461,9 @@ class ConstraintLogitsProcessor(LogitsProcessor):
             logits_[p, w] = log P(prefix p, next token = w)   -- the plain HMM marginal,
                 used by the caller as the normalizing constant.
 
-        batch_size -- how many prefixes to score at once; the intermediate tensor is
-            batch_size * num_states * vocab_size, which is what makes chunking worthwhile.
+        batch_size -- retained for the public API. Scoring visits only outgoing
+            live DFA edges and chunks their token labels, so temporary storage
+            does not scale with num_states * vocab_size.
         """
         device = self.hmm_model.alpha_exp.device
         neginf = -1e30
@@ -436,7 +474,6 @@ class ConstraintLogitsProcessor(LogitsProcessor):
         prefix_num = len(prefixes)
         prefix_lens = [len(prefix) for prefix in prefixes]
 
-        VE_mask, EV_mask, T_mask = self.dfa_model.VE_mask, self.dfa_model.EV_mask, self.dfa_model.T_mask
         A_cache, B_cache, C_cache, D_cache = self.A_cache, self.B_cache, self.C_cache, self.D_cache
         alpha_exp, beta, gamma = self.hmm_model.alpha_exp, self.hmm_model.beta, self.hmm_model.gamma
         hidden_states, vocab_size = self.hmm_model.hidden_states, self.hmm_model.vocab_size
@@ -504,54 +541,28 @@ class ConstraintLogitsProcessor(LogitsProcessor):
         generated_tokens_list = [prefix_len - generation_offset for prefix_len in prefix_lens]
         selected_idx = [prefix_idx for prefix_idx, generated_tokens in enumerate(generated_tokens_list)
             if token_ranges[prefix_idx][1] - generated_tokens > 0]
-        selected_num = len(selected_idx)
-        if len(selected_idx) > 0:
-            for batch_idx in range(0, selected_num, batch_size):
-                batch_size_ = min(batch_size, selected_num - batch_idx)
-                selected_batch = selected_idx[batch_idx: batch_idx+batch_size_]
-
-                A_batch = A[selected_batch] # batch_size_ * hidden_states
-
-                prefixes_batch = [prefixes[i] for i in selected_batch]
-
-                # pick the precomputed C layer-range matching how many tokens each prefix has
-                # left; the -1s are because the token being scored right now consumes one.
-                C_batch = []
-                for prefix_idx in selected_batch:
-                    min_tokens, max_tokens = token_ranges[prefix_idx]
-                    generated_tokens = generated_tokens_list[prefix_idx]
-                    remaining_tokens_max = max_tokens - generated_tokens
-                    remaining_tokens_min = max(1, min_tokens - generated_tokens)
-                    C_batch.append(C_cache[(remaining_tokens_min-1, remaining_tokens_max-1)])
-                C_batch = torch.stack(C_batch, dim=0) # batch_size_ * num_states * hidden_states
-
-                # past (A) meets future (C), still indexed by HMM state; then contract that
-                # state away against the emission matrix to score each token of the vocabulary.
-                # The result is indexed by the DFA state the next token would move us *into*.
-                C = A_batch[:, None, :] + C_batch # batch_size_ * num_states * hidden_states
-
-                C_shape = C.shape
-                C = matmul_log(torch.flatten(C, start_dim=0, end_dim=1), beta) # (batch_size_ * num_states) * vocab_size
-                C = C.view(C_shape[0], C_shape[1], -1) # batch_size_ * num_states * vocab_size
-
-                # build the 0/1 legality mask for that same (state, token) grid, by chaining
-                # the DFA's three incidence matrices: the edges leaving the prefix's current
-                # state (VE_mask), where each of those edges lands (EV_mask), and which tokens
-                # label it (T_mask). Entry (v, w) is 1 iff token w moves the DFA to state v.
-                mask = torch.stack([VE_mask[D_cache[prefix]] for prefix in prefixes_batch], dim=0) # prefix_mask, batch_size_ * num_transitions
-                mask = mask[:, :, None] * EV_mask[None, :, :] # batch_size_ * num_transitions * num_states
-                mask = torch.transpose(mask, 1, 2) # batch_size_ * num_states * num_transitions
-
-                mask_shape = mask.shape
-                mask = torch.matmul(torch.flatten(mask, start_dim=0, end_dim=1), T_mask) # (batch_size_ * num_states) * vocab_size
-                mask = mask.view(mask_shape[0], mask_shape[1], -1) # batch_size_ * num_states * vocab_size
-                mask = torch.nan_to_num(torch.log(mask), neginf=neginf) # 0.0 for legal, neginf for illegal
-
-                # zero out the illegal (state, token) pairs and sum over the DFA states, since
-                # a token is legal along at most one edge out of the current state
-                logits_batch = logsumexp(C + mask, dim=1) # batch_size_ * vocab_size
-
-                logits[selected_batch, :] = logits_batch
+        if selected_idx:
+            # A deterministic DFA assigns each token to one outgoing edge. Score
+            # that edge's destination directly instead of materializing a
+            # batch * num_states * vocab_size tensor. The chunk also bounds
+            # memory for DFAs with a large live edge label.
+            token_chunk_size = max(1, min(1024, 1048576 // hidden_states))
+            for prefix_idx in selected_idx:
+                min_tokens, max_tokens = token_ranges[prefix_idx]
+                generated_tokens = generated_tokens_list[prefix_idx]
+                remaining_tokens_max = max_tokens - generated_tokens
+                remaining_tokens_min = max(1, min_tokens - generated_tokens)
+                future = C_cache[(remaining_tokens_min - 1, remaining_tokens_max - 1)]
+                for destination, edge_tokens in self.live_edges[D_cache[prefixes[prefix_idx]]]:
+                    state_score = A[prefix_idx] + future[destination]
+                    for start in range(0, len(edge_tokens), token_chunk_size):
+                        token_ids = torch.as_tensor(
+                            edge_tokens[start:start + token_chunk_size], device=device
+                        )
+                        emissions = beta.index_select(1, token_ids).transpose(0, 1)
+                        logits[prefix_idx, token_ids] = torch.logsumexp(
+                            state_score[None, :] + emissions, dim=1
+                        )
 
         # if current prefix already ends with part/none of the suffix;
         # the loop above only covers futures that keep walking the DFA, so add the mass of
@@ -649,6 +660,14 @@ def rank_generated_ids(base_model, generated_ids, prompt_ids, suffix_ids,
     """
     device = base_model.device
     suffix_ids = suffix_ids[:suffix_length_cap]
+    forward = getattr(base_model, "forward", None)
+    try:
+        selective_logits = (
+            forward is not None
+            and "logits_to_keep" in inspect.signature(forward).parameters
+        )
+    except (TypeError, ValueError):
+        selective_logits = False
 
     def score_candidate(generated):
         sequence = list(prompt_ids) + list(generated) + list(suffix_ids)
@@ -662,12 +681,19 @@ def rank_generated_ids(base_model, generated_ids, prompt_ids, suffix_ids,
         if target_ids.numel() == 0:
             raise ValueError("cannot rank candidates with no scored tokens")
 
-        # A causal logit at position t-1 predicts token t. The model still reads
-        # the whole prompt, but softmax only needs the positions being scored.
+        # A causal logit at position t-1 predicts token t. Qwen3.5 can avoid
+        # materializing logits for the growing prompt by keeping only the last
+        # scored positions (plus the final position, which predicts no target).
         with torch.no_grad():
-            logits = base_model(input_ids, use_cache=False).logits[
-                :, scored_from - 1 : -1, :
-            ]
+            if selective_logits:
+                logits = base_model(
+                    input_ids, use_cache=False,
+                    logits_to_keep=target_ids.numel() + 1,
+                ).logits[:, :-1, :]
+            else:
+                logits = base_model(input_ids, use_cache=False).logits[
+                    :, scored_from - 1 : -1, :
+                ]
             log_probs = torch.log_softmax(logits, dim=-1)
             token_log_probs = log_probs.gather(
                 -1, target_ids.unsqueeze(-1)

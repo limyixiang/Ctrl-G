@@ -93,7 +93,10 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=134)
     parser.add_argument("--max_steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--beam_size", type=int, default=8)
+    parser.add_argument(
+        "--beam_size", type=int, default=1,
+        help="Ctrl-G beam width and action candidates (default: 1)",
+    )
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
     parser.add_argument("--max_decision_tokens", type=int, default=512)
     parser.add_argument("--max_action_tokens", type=int, default=32)
@@ -204,8 +207,13 @@ def main():
         "action_latency_seconds": 0.0,
     }
 
+    track_cuda_memory = (
+        str(args.device).startswith("cuda") and torch.cuda.is_available()
+    )
     with open(episodes_path, "w") as output_file:
         for episode_index in range(args.num_episodes):
+            if track_cuda_memory:
+                torch.cuda.reset_peak_memory_stats(args.device)
             record = run_episode(
                 env,
                 backend,
@@ -253,11 +261,20 @@ def main():
                 totals["action_latency_seconds"] += step.action_latency_seconds
 
             action_count = max(totals["actions"], 1)
+            memory_status = ""
+            if track_cuda_memory:
+                gib = 1024 ** 3
+                memory_status = (
+                    f" cuda_allocated={torch.cuda.memory_allocated(args.device) / gib:.1f}GiB"
+                    f" cuda_reserved={torch.cuda.memory_reserved(args.device) / gib:.1f}GiB"
+                    f" cuda_episode_peak={torch.cuda.max_memory_allocated(args.device) / gib:.1f}GiB"
+                )
             print(
                 f"[{episode_index + 1}/{args.num_episodes}] "
                 f"SR={totals['successes'] / totals['episodes']:.3f} "
                 f"admissible={totals['admissible_actions'] / action_count:.3f} "
                 f"parse={totals['parsed_turns'] / action_count:.3f}"
+                f"{memory_status}"
             )
 
     action_count = max(totals["actions"], 1)

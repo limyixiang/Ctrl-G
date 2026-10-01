@@ -23,6 +23,19 @@ class TinyCausalModel:
         return SimpleNamespace(logits=logits)
 
 
+class TinySelectiveCausalModel(TinyCausalModel):
+    def forward(self, input_ids, *, use_cache, logits_to_keep):
+        self.calls.append((tuple(input_ids.shape), use_cache, logits_to_keep))
+        vocabulary = torch.arange(12)
+        preferred = (input_ids[:, -logits_to_keep:] + 1) % len(vocabulary)
+        logits = torch.where(
+            vocabulary == preferred.unsqueeze(-1), 2.0, 0.0
+        )
+        return SimpleNamespace(logits=logits)
+
+    __call__ = forward
+
+
 class RerankingTests(unittest.TestCase):
     def test_extract_stops_at_first_generated_eos(self):
         outputs = [
@@ -62,6 +75,16 @@ class RerankingTests(unittest.TestCase):
         )
 
         self.assertEqual(ranked, [(3, 8), (3,)])
+
+    def test_reranking_keeps_only_scored_logits_when_supported(self):
+        model = TinySelectiveCausalModel()
+        ranked = rank_generated_ids(model, [(5,), (3,), (3, 8)], [1, 2], [9])
+
+        self.assertEqual(ranked, [(3, 8), (3,), (5,)])
+        self.assertEqual(
+            model.calls,
+            [((1, 4), False, 3), ((1, 4), False, 3), ((1, 5), False, 4)],
+        )
 
 
 if __name__ == "__main__":
