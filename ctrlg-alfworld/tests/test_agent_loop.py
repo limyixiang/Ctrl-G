@@ -88,6 +88,7 @@ class AgentLoopTests(unittest.TestCase):
             record = run_episode(OneStepEnvironment(), backend, self.skills, name)
             condition = get_condition(name)
             self.assertTrue(record.success)
+            self.assertEqual(record.task_description, "look around")
             self.assertEqual(backend.calls[0][0:2], ("put", condition.use_decision_dfa))
             self.assertNotIn("look", repr(backend.calls[0]))
             self.assertNotIn("Your admissible actions", backend.prompt_texts[0])

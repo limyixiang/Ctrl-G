@@ -93,6 +93,7 @@ class EpisodeRecord:
     condition: str
     success: bool
     num_steps: int
+    task_description: str
     steps: list[StepRecord] = field(default_factory=list)
 
     def to_dict(self):
@@ -254,5 +255,6 @@ def run_episode(
         condition=condition.name.value,
         success=success,
         num_steps=len(records),
+        task_description=task_description,
         steps=records,
     )
