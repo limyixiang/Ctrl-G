@@ -2,7 +2,7 @@ experiment:
   conditions:
     - state_prompt
     - state_ctrlg
-  estimand: "effect of schema/policy constrained Ctrl-G over the byte-identical prompt-only agent"
+  estimand: "effect of joint state/action Ctrl-G with schema/policy constraints over the byte-identical prompt-only agent"
   seed: 42
   max_steps: 50
   max_thought_tokens: 1024
@@ -13,12 +13,22 @@ experiment:
   temperature: 1.0
   rollout_temperature: 0.7
   max_hmm_prefix_tokens: null
+  hmm_context_steps: 1
+  max_hmm_context_tokens: 1024
 
 distillation:
-  prompt_format: "state block with persistent state-history replay"
-  sampling_policy: "hard-DFA states followed by unconstrained actions; resample only empty actions"
-  split_policy: "state-group train/dev split"
-  sequence: "generated post-think text through <action>, action body, </action>, EOS"
+  prompt_format: "state_with_persistent_history_no_oracle_v1"
+  hmm_sequence_format: "context_state_action_censored_v1"
+  hmm_context_format: "observable_trajectory_json_v1"
+  hidden_states: 4096
+  collection_max_attempts: 5
+  context_construction_stage: "dataset_build"
+  hmm_context_steps: 1
+  max_hmm_context_tokens: 1024
+  rollout_sample_format: "unmasked_state_action_attempt_v1"
+  sampling_policy: "unmasked state/action draws; bounded whole-turn retries for public schema/grammar validity; retain all attempts"
+  split_policy: "game-instance train/dev split"
+  sequence: "C_t + observed state/action target; EOS only on protocol completion or observed model EOS"
   excludes:
     - system and user prompt tokens
     - native thinking tokens
@@ -27,7 +37,10 @@ distillation:
 
 invariants:
   use_state_tracker: false
-  state_history_replay: true
+  state_history_replay: false
+  action_observation_history_replay: true
+  collection_masking: false
+  hmm_scope: "state_and_action"
   admissible_commands_generation_use: false
   dfa_source: "versioned SKILLS.md schemas/policies plus model-declared state fields"
   dfa_scope: "state body plus closer; action body plus closer"

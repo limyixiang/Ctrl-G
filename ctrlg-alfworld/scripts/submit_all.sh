@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# State-format collections start fresh; set RESUME=1 only for an existing
-# state-format run. Decision-format collections cannot be resumed.
+# Raw unmasked collections start fresh. RESUME=1 requires
+# an existing collection with the same raw version and retry policy.
 RESUME=${RESUME:-0}
 
 submit() {
@@ -16,11 +16,11 @@ submit() {
         --gres=gpu:h100-96:1 \
         --job-name="$name" \
         --exclude="xgpi17,xgpi18,xgpi15" \
-        --export="ALL,RESUME=$RESUME,MODEL=$model,MAX_STEPS=50,SHOW_ADMISSIBLE_ACTIONS=0,EPISODES=3553,OUTPUT=$output" \
+        --export="ALL,RESUME=$RESUME,MODEL=$model,MAX_STEPS=50,EPISODES=3553,OUTPUT=$output" \
         ctrlg-alfworld/slurm/collect_hmm_samples.sh
 }
 
-submit "Qwen/Qwen3.5-9B"   "9b"   "results/alfworld/9b_state_rollout"
-submit "Qwen/Qwen3.5-4B"   "4b"   "results/alfworld/4b_state_rollout"
-# submit "Qwen/Qwen3.5-2B"   "2b"   "results/alfworld/2b_state_rollout"
-# submit "Qwen/Qwen3.5-0.8B" "0.8b" "results/alfworld/0.8b_state_rollout"
+submit "Qwen/Qwen3.5-9B"   "9b"   "results/alfworld/9b_context_rollout_v1"
+submit "Qwen/Qwen3.5-4B"   "4b"   "results/alfworld/4b_context_rollout_v1"
+# submit "Qwen/Qwen3.5-2B"   "2b"   "results/alfworld/2b_context_rollout_v1"
+# submit "Qwen/Qwen3.5-0.8B" "0.8b" "results/alfworld/0.8b_context_rollout_v1"

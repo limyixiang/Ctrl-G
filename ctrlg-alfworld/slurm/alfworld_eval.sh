@@ -16,7 +16,7 @@
 # array use ctrlg-alfworld/slurm/eval_grid.sh.
 #
 #   sbatch ctrlg-alfworld/slurm/alfworld_eval.sh state_prompt 20 50
-#   MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_model_9b/checkpoint-112' sbatch ctrlg-alfworld/slurm/alfworld_eval.sh state_ctrlg
+#   MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_context_model_9b_v1/checkpoint-112' sbatch ctrlg-alfworld/slurm/alfworld_eval.sh state_ctrlg
 
 set -euo pipefail
 
@@ -48,5 +48,7 @@ python ctrlg-alfworld/scripts/run_eval.py \
   "${HMM_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --max_steps "$MAX_STEPS" \
+  --hmm_context_steps "${HMM_CONTEXT_STEPS:-1}" \
+  --max_hmm_context_tokens "${MAX_HMM_CONTEXT_TOKENS:-1024}" \
   --beam_size "$BEAM_SIZE" \
   --out "$OUTPUT"

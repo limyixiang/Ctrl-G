@@ -114,7 +114,8 @@ class BackendIntegrationTests(unittest.TestCase):
 
         backend._generate_hmm_span = hmm
         turn = HFBackend.generate_turn(
-            backend, "P", self.skills, "put", constrained=True
+            backend, "P", self.skills, "put", constrained=True,
+            hmm_context=SimpleNamespace(token_ids=(), truncated=False)
         )
         self.assertTrue(turn.state_schema_valid)
         self.assertTrue(turn.action_grammar_valid)
@@ -231,79 +232,97 @@ class BackendIntegrationTests(unittest.TestCase):
             ("a", 31, "regex"), ("b", 32, "regex"), ("c", 33, "regex")
         ])
 
-    def test_vllm_training_retries_failed_state_with_distinct_seeds(self):
-        tokenizer = CharacterTokenizer()
+    def test_training_is_unmasked_and_attempt_seeds_are_distinct(self):
         backend = object.__new__(VLLMBackend)
-        backend.tokenizer = tokenizer
-        backend.cfg = GenConfig(
-            max_state_tokens=512,
-            max_action_tokens=32,
-            seed=17,
-            state_max_attempts=5,
-            state_retry_temperature=0.2,
-        )
-        state_calls = []
-
+        backend.tokenizer = CharacterTokenizer()
+        backend.cfg = GenConfig(seed=17)
+        calls = []
         def generate(prompt, stops, cap, temperature, *, seed, guided_regex=None):
-            if guided_regex is not None:
-                state_calls.append((temperature, seed))
-                if len(state_calls) < 3:
-                    raise StructuredOutputMismatchError(
-                        chunk("repeated", tokenizer, stop=False)
-                    )
-                return chunk(STATE + "</state>", tokenizer)
+            self.assertIsNone(guided_regex)
+            calls.append((stops, temperature, seed))
             if stops == ["</think>"]:
-                return chunk("reason</think>", tokenizer)
-            return chunk("look</action>", tokenizer)
-
+                return chunk("reason</think>", backend.tokenizer)
+            if stops == ["</state>"]:
+                return chunk(STATE + "</state>", backend.tokenizer)
+            return chunk("look</action>", backend.tokenizer)
         backend._generate_until = generate
-        turns = backend.generate_turns_training(
-            "prompt", self.skills, "put", count=1, seed_context=(2, 3, 0)
-        )
+        turns = backend.generate_turns_training("P", self.skills, "put", count=2, seed_context=(2,3,0))
+        self.assertEqual(len(turns), 2)
+        state_calls = [c for c in calls if c[0] == ["</state>"]]
+        self.assertEqual([c[1] for c in state_calls], [0.7, 0.7])
+        self.assertEqual(len({c[2] for c in state_calls}), 2)
+        self.assertTrue(all(t.state_schema_valid for t in turns))
+        self.assertTrue(all(t.state_attempts == 1 for t in turns))
 
-        self.assertEqual(len(turns), 1)
-        self.assertEqual(turns[0].state_attempts, 3)
-        self.assertTrue(turns[0].state_retry_used)
-        self.assertEqual(
-            turns[0].state_failure_reasons,
-            ("max_tokens_before_accept", "max_tokens_before_accept"),
-        )
-        self.assertEqual([item[0] for item in state_calls], [None, 0.2, 0.2])
-        self.assertEqual(len(set(item[1] for item in state_calls)), 3)
-        self.assertEqual(
-            turns[0].state_attempt_seeds,
-            tuple(item[1] for item in state_calls),
-        )
-
-    def test_vllm_training_raises_typed_failure_after_bounded_attempts(self):
+    def test_joint_inference_uses_context_in_both_hmm_phases_with_matched_sampling(self):
+        import torch
+        from ctrlg import HMM
+        from ctrlg_alfworld.hmm_context import build_hmm_context
         tokenizer = CharacterTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer, backend.vocab_size, backend.device = tokenizer, len(tokenizer), "cpu"
+        backend.cfg = GenConfig(do_sample=True, temperature=.6, rollout_temperature=.4)
+        backend.hmm_model = HMM(2, len(tokenizer), 0)
+        calls = []
+        class Model:
+            def generate(self, **kwargs):
+                prompt = tokenizer.decode(kwargs["input_ids"][0].tolist())
+                text = (STATE + "</state>" if prompt.endswith("<state>") else
+                        "inventory</action>" if prompt.endswith("<action>") else "reason</think>")
+                generated = tokenizer.encode(text)
+                if "logits_processor" in kwargs:
+                    current = kwargs["input_ids"]
+                    # Check real constraint scores at the beginning and boundary.
+                    for index, token in enumerate(generated):
+                        if index in (0, len(generated)-1):
+                            scores = torch.zeros(1, len(tokenizer))
+                            for processor in kwargs["logits_processor"]:
+                                scores = processor(current, scores)
+                            self.assert_allowed(scores, token)
+                        current = torch.cat((current, torch.tensor([[token]])), dim=1)
+                calls.append((prompt, kwargs))
+                if prompt.endswith("<action>") and "logits_processor" in kwargs:
+                    generated += [0]
+                return torch.tensor([kwargs["input_ids"][0].tolist()+generated])
+            @staticmethod
+            def assert_allowed(scores, token):
+                assert torch.isfinite(scores[0,token]) and scores[0,token] > -1e20
+        backend.model = Model()
+        context = build_hmm_context(tokenizer, "put cup", "room", "room", [])
+        turn = backend.generate_turn("P", self.skills, "put", constrained=True,
+                                     greedy_head=False, hmm_context=context)
+        self.assertTrue(turn.state_hmm_applied and turn.hmm_applied)
+        self.assertEqual(list(turn.hmm_prefix_token_ids[:len(context.token_ids)]), list(context.token_ids))
+        self.assertEqual(calls[1][1]["temperature"], .4)
+        self.assertEqual(calls[2][1]["temperature"], .6)
+        self.assertEqual(calls[1][1]["num_beams"], 1)
+        state_processor = calls[1][1]["logits_processor"][0]
+        self.assertEqual(state_processor.prefix_ids, list(context.token_ids)+tokenizer.encode("<state>"))
+        self.assertEqual(state_processor.suffix_ids, [])
+        self.assertEqual(turn.parsed.action, "inventory")
+        # The prompt arm gets exactly the same head/action sampling settings.
+        calls.clear()
+        baseline = backend.generate_turn("P", self.skills, "put", constrained=False,
+                                         greedy_head=False, hmm_context=context)
+        self.assertEqual([kw["temperature"] for _,kw in calls], [.4,.4,.6])
+        self.assertEqual(turn.total_generated_tokens, baseline.total_generated_tokens + 1)
+
+    def test_training_returns_truncated_state_without_action_or_synthetic_target(self):
         backend = object.__new__(VLLMBackend)
-        backend.tokenizer = tokenizer
-        backend.cfg = GenConfig(
-            seed=19,
-            state_max_attempts=3,
-            state_retry_temperature=0.2,
-        )
-
+        backend.tokenizer = CharacterTokenizer()
+        backend.cfg = GenConfig(seed=19)
+        calls = []
         def generate(prompt, stops, cap, temperature, *, seed, guided_regex=None):
-            if guided_regex is not None:
-                raise StructuredOutputMismatchError(
-                    chunk("repeated", tokenizer, stop=False)
-                )
-            return chunk("reason</think>", tokenizer)
-
+            self.assertIsNone(guided_regex)
+            calls.append(stops)
+            return chunk("reason</think>" if stops == ["</think>"] else "{task: put", backend.tokenizer,
+                         stop=stops == ["</think>"])
         backend._generate_until = generate
-        with self.assertRaises(StateGenerationExhausted) as caught:
-            backend.generate_turns_training(
-                "prompt", self.skills, "put", count=1, seed_context=(4, 5, 0)
-            )
-
-        self.assertEqual(len(caught.exception.attempt_records), 3)
-        self.assertEqual(caught.exception.thought.text, "reason</think>")
-        self.assertEqual(
-            [record["temperature"] for record in caught.exception.attempt_records],
-            [0.0, 0.2, 0.2],
-        )
+        turn = backend.generate_turns_training("P", self.skills, "put", count=1)[0]
+        self.assertEqual(calls, [["</think>"], ["</state>"]])
+        self.assertEqual(backend.tokenizer.decode(turn.hmm_target_token_ids), "<state>{task: put")
+        self.assertEqual(turn.tail_token_ids, ())
+        self.assertTrue(turn.state_truncated)
 
 
 if __name__ == "__main__":

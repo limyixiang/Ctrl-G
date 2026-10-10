@@ -9,10 +9,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from ctrlg_alfworld.hmm_context import PADDING_TOKEN_ID, HMM_SEQUENCE_FORMAT, HMM_CONTEXT_FORMAT
 from ctrlg_alfworld.distillation import (
     extract_lvd_embeddings,
-    load_advance_selections,
     load_eligible_records,
+    build_contextual_records,
+    summarize_context_usage,
     pad_sequences,
     split_records,
     validate_prompt_regime,
@@ -38,7 +40,7 @@ def pad_lvd(sequences, embeddings, *, length, eos_token_id):
                 sequences,
                 torch.full(
                     (sequences.shape[0], padding_length),
-                    eos_token_id,
+                    PADDING_TOKEN_ID,
                     dtype=sequences.dtype,
                 ),
             ),
@@ -61,13 +63,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", required=True)
     parser.add_argument(
-        "--episodes",
-        help="Rollout episodes.jsonl containing advance_trace selections",
+        "--history",
+        help="Observable episode history; defaults to history.jsonl beside --samples",
     )
     parser.add_argument(
         "--selected_only",
         action="store_true",
-        help="Build from executed sampled turns referenced by --episodes only",
+        help="Obsolete: all observed attempts are required",
     )
     parser.add_argument("--tokenizer", required=True)
     parser.add_argument("--model", default=None)
@@ -76,29 +78,31 @@ def main():
     parser.add_argument("--train_chunks", type=int, default=8)
     parser.add_argument("--dev_fraction", type=float, default=0.1)
     parser.add_argument("--lvd_samples", type=int, default=10000)
+    parser.add_argument("--lvd_embedding_budget_gib", type=float, default=32.0)
+    parser.add_argument("--hmm_context_steps", type=int, default=1)
+    parser.add_argument("--max_hmm_context_tokens", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_embeddings", action="store_true")
     parser.add_argument(
         "--dtype", choices=["float16", "bfloat16", "float32"], default="bfloat16"
     )
     args = parser.parse_args()
+    if args.lvd_embedding_budget_gib <= 0 or args.lvd_samples < 1:
+        parser.error("LVD embedding budget and sample count must be positive")
     if args.save_embeddings and args.model is None:
         parser.error("--save_embeddings requires --model")
-    if args.selected_only and not args.episodes:
-        parser.error("--selected_only requires --episodes")
-    if args.episodes and not args.selected_only:
-        parser.error("--episodes is only used with --selected_only")
+    if args.selected_only:
+        parser.error("the main dataset includes all attempts; --selected_only is obsolete")
+    if args.hmm_context_steps < 0 or args.max_hmm_context_tokens < 1:
+        parser.error("context steps must be nonnegative and context budget positive")
+    history_path = Path(args.history) if args.history else Path(args.samples).with_name("history.jsonl")
+    if not history_path.is_file():
+        parser.error(f"observable history is required to rebuild context: {history_path}; use --history")
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
-    selected_actions = None
-    selection_stats = None
-    if args.selected_only:
-        selected_actions, selection_stats = load_advance_selections(args.episodes)
-    all_eligible = load_eligible_records(
-        args.samples, selected_actions=selected_actions
-    )
+    all_eligible = load_eligible_records(args.samples)
     records = [item for item in all_eligible if bool(item["use_state"])]
     if not records:
         raise ValueError("no eligible state-format records")
@@ -113,6 +117,8 @@ def main():
             "--model does not match collection provenance: "
             f"{args.model!r} != {collection_regime['model']!r}"
         )
+    records = build_contextual_records(tokenizer, records, history_path,
+        k=args.hmm_context_steps, max_tokens=args.max_hmm_context_tokens)
     validate_tokenizer_contract(tokenizer, records)
     train_records, dev_records = split_records(
         records, dev_fraction=args.dev_fraction, seed=args.seed
@@ -153,8 +159,15 @@ def main():
             args.model, dtype=getattr(torch, args.dtype)
         ).to("cuda")
         model.eval()
+        text_config = model.config.get_text_config() if hasattr(model.config, "get_text_config") else model.config
+        hidden_size = text_config.hidden_size
+        bytes_per_row = sequence_length * hidden_size * torch.empty((), dtype=getattr(torch, args.dtype)).element_size()
+        capacity = int(args.lvd_embedding_budget_gib * 1024**3) // bytes_per_row
+        if capacity < 1:
+            raise ValueError("LVD embedding budget cannot hold one padded sequence")
+        lvd_records = lvd_records[:capacity]
         lvd_sequences, lvd_embeddings = extract_lvd_embeddings(
-            model, lvd_records, eos_token_id=tokenizer.eos_token_id
+            model, lvd_records, eos_token_id=tokenizer.eos_token_id, sequence_length=sequence_length
         )
         lvd_sequences, lvd_embeddings = pad_lvd(
             lvd_sequences,
@@ -178,14 +191,36 @@ def main():
     dev_states = {(item.get("episode"), item.get("step")) for item in dev_records}
     if train_states & dev_states:
         raise RuntimeError("environment-state leakage between train and dev")
+    train_games = {item["gamefile"] for item in train_records}
+    dev_games = {item["gamefile"] for item in dev_records}
+    if train_games & dev_games:
+        raise RuntimeError("game-instance leakage between train and dev")
+    # Explicit observed lengths and phase boundaries support output-only scoring.
+    for name, rows in (("train", train_records), ("dev", dev_records), ("lvd", lvd_records)):
+        with open(f"{prefix}.{name}.spans.json", "w") as output_file:
+            json.dump([dict(length=len(r["hmm_sequence_token_ids"]),
+                context_length=len(r["hmm_context_token_ids"]),
+                context_truncated=r["hmm_context_truncated"],
+                context_history_turns=r["hmm_context_history_turns"],
+                action_start=r["hmm_action_start"], completed=r["hmm_completed"],
+                gamefile=r["gamefile"], episode=r["episode"], step=r["step"], sample=r["sample"])
+                for r in rows], output_file)
     metadata = {
         "source": args.samples,
         "source_sha256": file_sha256(args.samples),
+        "history_source": str(history_path),
+        "history_source_sha256": file_sha256(history_path),
         "selection_policy": (
-            "executed_sample_only" if args.selected_only else "all_eligible"
+            "all_observed_attempts"
         ),
         "dataset": args.dataset,
         **collection_regime,
+        "hmm_sequence_format": HMM_SEQUENCE_FORMAT,
+        "hmm_context_format": HMM_CONTEXT_FORMAT,
+        "hmm_context_steps": args.hmm_context_steps,
+        "max_hmm_context_tokens": args.max_hmm_context_tokens,
+        "context_construction_stage": "dataset_build",
+        "hmm_context_usage": summarize_context_usage(records, args.max_hmm_context_tokens),
         "no_oracle_filtering": True,
         "skills_sha256": records[0].get("skills_sha256"),
         "eligible_records_in_source": len(all_eligible),
@@ -195,7 +230,11 @@ def main():
         "dev_records": len(dev_records),
         "train_state_groups": len(train_states),
         "dev_state_groups": len(dev_states),
+        "train_game_groups": len(train_games),
+        "dev_game_groups": len(dev_games),
         "lvd_records": len(lvd_records),
+        "requested_lvd_samples": args.lvd_samples,
+        "lvd_embedding_budget_gib": args.lvd_embedding_budget_gib,
         "train_chunks": chunk_count,
         "sequence_length": sequence_length,
         "eos_token_id": tokenizer.eos_token_id,
@@ -203,23 +242,15 @@ def main():
         "model": collection_regime["model"],
         "tokenizer": collection_regime["tokenizer"],
         "seed": args.seed,
-        "split_policy": "state-group train/dev split",
+        "split_policy": "game-instance train/dev split",
+        "padding_token_id": PADDING_TOKEN_ID,
+        "likelihood_policy": "one sequence per attempt; incomplete targets are censored prefixes",
+        "completed_records": sum(item["hmm_completed"] for item in records),
+        "truncated_records": sum(not item["hmm_completed"] for item in records),
         "git_revision": git_revision(Path(__file__).resolve().parents[2]),
         "source_tree_sha256": source_tree_sha256(Path(__file__).resolve().parents[1]),
         "runtime": runtime_versions(),
     }
-    if args.selected_only:
-        metadata.update(
-            {
-                "episodes_source": args.episodes,
-                "episodes_source_sha256": file_sha256(args.episodes),
-                **selection_stats,
-                "selected_eligible_records": len(all_eligible),
-                "selected_ineligible_records": (
-                    selection_stats["sampled_advance_steps"] - len(all_eligible)
-                ),
-            }
-        )
     with open(f"{prefix}.metadata.json", "w") as output_file:
         json.dump(metadata, output_file, indent=2)
     print(json.dumps(metadata, indent=2))

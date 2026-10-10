@@ -2,7 +2,7 @@
 
 Every sample uses the persistent-state prompt format that is evaluated in
 both active conditions. One nonempty model action defines the trajectory at
-each state, but only admissible raw generations are HMM training examples.
+each state, but all observed state/action attempts are HMM training examples, including truncations.
 """
 
 import argparse
@@ -44,6 +44,8 @@ from ctrlg_alfworld.provenance import (
     source_tree_sha256,
 )
 from ctrlg_alfworld.skills import SkillSet
+from ctrlg_alfworld.collection import executable_attempt, observed_attempt_span, ROLLOUT_SAMPLE_FORMAT
+from ctrlg_alfworld.hmm_context import HMM_SEQUENCE_FORMAT
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +56,7 @@ RESUME_COMPATIBILITY_FIELDS = (
     "split",
     "num_episodes",
     "sampling_policy",
+    "rollout_sample_format", "collection_max_attempts",
     "prompt_format",
     "schema_version",
     "policy_version",
@@ -63,11 +66,7 @@ RESUME_COMPATIBILITY_FIELDS = (
     "max_thought_tokens",
     "max_state_tokens",
     "max_action_tokens",
-    "state_max_attempts",
-    "state_retry_temperature",
     "temperature",
-    "max_hmm_prefix_tokens",
-    "max_hmm_sequence_tokens",
     "seed",
     "generation_schedule",
     "candidate_seed_scheme",
@@ -323,6 +322,7 @@ def state_retry_metrics(counts: Counter, *, completed_episodes: int) -> dict:
     recovered = counts["recovered_calls"]
     exhausted = counts["exhausted_calls"]
     return {
+        "scope": "whole_turn_collection_attempts",
         "calls": calls,
         "attempts": counts["attempts"],
         "retried_calls": retried,
@@ -397,7 +397,7 @@ def recover_resume_state(
                     break
                 terminal_state_failure = (
                     trace_step.get("termination_reason")
-                    == "state_generation_exhausted"
+                    in ("state_generation_exhausted", "collection_attempts_exhausted")
                 )
                 if terminal_state_failure:
                     trace_position_ok = (
@@ -440,14 +440,17 @@ def recover_resume_state(
                         episode_complete = False
                         break
                     action = record.get("action")
-                    if terminal_state_failure:
+                    if (record.get("rollout_sample_format") == ROLLOUT_SAMPLE_FORMAT
+                            or record.get("hmm_sequence_format") == HMM_SEQUENCE_FORMAT):
+                        should_select = not terminal_state_failure and sample_index == sample_attempts - 1
+                        action_ok = (isinstance(action, str)
+                                     and record.get("selected_for_execution") is should_select
+                                     and (not should_select or bool(action)))
+                    elif terminal_state_failure:
                         action_ok = isinstance(action, str) and not action
                     else:
                         action_ok = isinstance(action, str) and (
-                            not action
-                            if sample_index < sample_attempts - 1
-                            else bool(action)
-                        )
+                            not action if sample_index < sample_attempts - 1 else bool(action))
                     if not action_ok:
                         episode_complete = False
                         break
@@ -458,11 +461,13 @@ def recover_resume_state(
                         "state_generation_exhausted" in sample_exclusions
                     )
                     try:
-                        update_state_retry_counts(
-                            episode_retry_counts,
-                            attempts=record.get("state_attempts", 1),
-                            exhausted=state_exhausted,
-                        )
+                        if (record.get("rollout_sample_format") != ROLLOUT_SAMPLE_FORMAT
+                                and record.get("hmm_sequence_format") != HMM_SEQUENCE_FORMAT):
+                            update_state_retry_counts(
+                                episode_retry_counts,
+                                attempts=record.get("state_attempts", 1),
+                                exhausted=state_exhausted,
+                            )
                     except ValueError:
                         episode_complete = False
                         incomplete_artifact = "sample"
@@ -473,6 +478,10 @@ def recover_resume_state(
                     )
                 if not episode_complete:
                     break
+                if (record.get("rollout_sample_format") == ROLLOUT_SAMPLE_FORMAT
+                        or record.get("hmm_sequence_format") == HMM_SEQUENCE_FORMAT):
+                    update_state_retry_counts(episode_retry_counts, attempts=sample_attempts,
+                                              exhausted=terminal_state_failure)
 
             if episode_complete and history_records is not None and (
                 episode_position >= len(history_records)
@@ -549,6 +558,8 @@ def update_metadata_progress(
     metadata["collection_status"] = (
         "complete" if completed_episodes == metadata["num_episodes"] else "in_progress"
     )
+    if state_retry_counts is not None:
+        metadata["collection_retry_metrics"] = state_retry_metrics(state_retry_counts, completed_episodes=completed_episodes)
     metadata["counts"] = {
         "samples": sample_count,
         "eligible": eligible_count,
@@ -604,13 +615,13 @@ def prepare_output_paths(
 
 
 def select_advance_turn(sampled_turns):
-    """Return the first sample whose extracted action is non-empty."""
+    """Return the first structurally executable sample, without oracle filtering."""
 
     return next(
         (
             (sample_index, turn)
             for sample_index, turn in sampled_turns
-            if turn.parsed.action
+            if executable_attempt(turn)
         ),
         None,
     )
@@ -623,7 +634,7 @@ def distill_exclusion_reasons(
     max_hmm_prefix_tokens,
     max_hmm_sequence_tokens,
 ):
-    """Explain why a generated state/action sequence cannot be distilled.
+    """Legacy context-free span diagnostics, retained for old artifact readers.
 
     Native thinking is outside the HMM sequence, so a repaired or truncated
     thought does not invalidate an otherwise exact state/action span.
@@ -672,21 +683,8 @@ def main():
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
     parser.add_argument("--max_state_tokens", type=int, default=512)
     parser.add_argument("--max_action_tokens", type=int, default=32)
-    parser.add_argument(
-        "--state_max_attempts",
-        type=int,
-        default=5,
-        help="Maximum total vLLM structured-state attempts per sample.",
-    )
-    parser.add_argument(
-        "--state_retry_temperature",
-        type=float,
-        default=0.2,
-        help="Temperature for attempts after the initial greedy state.",
-    )
+    parser.add_argument("--collection_max_attempts", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--max_hmm_prefix_tokens", type=int, default=None)
-    parser.add_argument("--max_hmm_sequence_tokens", type=int, default=640)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -710,18 +708,10 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.collection_max_attempts < 1:
+        parser.error("collection attempts must be positive")
     if args.overwrite and args.resume:
         parser.error("--overwrite and --resume are mutually exclusive")
-    if args.backend == "vllm" and args.state_max_attempts < 1:
-        parser.error("--state_max_attempts must be at least one")
-    if (
-        args.backend == "vllm"
-        and args.state_max_attempts > 1
-        and args.state_retry_temperature <= 0
-    ):
-        parser.error(
-            "--state_retry_temperature must be positive when retries are enabled"
-        )
     if args.resume and args.backend != "vllm":
         parser.error(
             "--resume is only safe with --backend vllm because the HF backend "
@@ -768,8 +758,7 @@ def main():
         max_action_tokens=args.max_action_tokens,
         rollout_temperature=args.temperature,
         seed=args.seed,
-        state_max_attempts=args.state_max_attempts,
-        state_retry_temperature=args.state_retry_temperature,
+        collection_max_attempts=args.collection_max_attempts,
     )
     if args.backend == "vllm":
         backend = VLLMBackend(
@@ -793,27 +782,21 @@ def main():
         "tokenizer": args.tokenizer or args.model,
         "split": args.split,
         "num_episodes": args.num_episodes,
-        "sampling_policy": "single_trajectory_resample_empty_action",
+        "sampling_policy": "unmasked_all_attempts_bounded_structural_retry",
         "prompt_format": PROMPT_FORMAT,
         "schema_version": skillset.schema_version,
         "policy_version": skillset.policy_version,
         "no_oracle_filtering": True,
-        "constrained_state_collection": True,
+        "constrained_state_collection": False,
         "max_steps": args.max_steps,
         "max_thought_tokens": args.max_thought_tokens,
         "max_state_tokens": args.max_state_tokens,
         "max_action_tokens": args.max_action_tokens,
-        "state_max_attempts": args.state_max_attempts,
-        "state_retry_temperature": args.state_retry_temperature,
         "temperature": args.temperature,
-        "max_hmm_prefix_tokens": args.max_hmm_prefix_tokens,
-        "max_hmm_sequence_tokens": args.max_hmm_sequence_tokens,
         "seed": args.seed,
-        "generation_schedule": (
-            "greedy_thought_bounded_structured_state_retry_then_sampled_action"
-            if args.backend == "vllm"
-            else "greedy_thought_hard_state_then_sampled_action"
-        ),
+        "generation_schedule": "greedy_thought_unmasked_sampled_state_and_action",
+        "rollout_sample_format": ROLLOUT_SAMPLE_FORMAT,
+        "collection_max_attempts": args.collection_max_attempts,
         "candidate_seed_scheme": (
             "sha256(base_seed,episode,step,sample,candidate,phase_with_state_attempt)"
             if args.backend == "vllm"
@@ -822,7 +805,7 @@ def main():
         "environment_seed_scheme": "sorted_gamefiles_then_textworld_seed",
         "game_files_sha256": json_sha256(env_factory.game_files),
         "history_format": (
-            "episode_jsonl_v4_single_trajectory_empty_and_state_retry"
+            "episode_jsonl_v6_raw_unmasked_attempts"
         ),
         "device": args.device if args.backend == "hf" else "vllm_server",
         "dtype": args.dtype if args.backend == "hf" else "vllm_server",
@@ -963,170 +946,15 @@ def main():
 
                 selected = None
                 sample_index = 0
-                while selected is None:
-                    try:
-                        turn = backend.generate_turns_training(
-                            prompt_text,
-                            skillset,
-                            task_key,
-                            count=1,
-                            seed_context=(episode_index, step_index, sample_index),
-                        )[0]
-                    except StateGenerationExhausted as exc:
-                        attempt_records = list(exc.attempt_records)
-                        state_attempts = len(attempt_records)
-                        failure_reasons = [
-                            item["reason"] for item in attempt_records
-                        ]
-                        exclusion_reasons = ["state_generation_exhausted"]
-                        update_state_retry_counts(
-                            state_retry_counts,
-                            attempts=state_attempts,
-                            exhausted=True,
-                        )
-                        candidate_audit.append(
-                            {
-                                "sample": sample_index,
-                                "model_state": "",
-                                "model_action": "",
-                                "action_was_admissible": None,
-                                "parse_ok": False,
-                                "parse_errors": exclusion_reasons,
-                                "state_attempts": state_attempts,
-                                "state_retry_used": state_attempts > 1,
-                                "state_failure_reasons": failure_reasons,
-                                "distill_eligible": False,
-                                "distill_exclusion_reasons": exclusion_reasons,
-                            }
-                        )
-                        state_latency = sum(
-                            item["latency_seconds"] for item in attempt_records
-                        )
-                        failure_record = {
-                            "episode": episode_index,
-                            "step": step_index,
-                            "sample": sample_index,
-                            "gamefile": gamefile,
-                            "task_key": task_key,
-                            "use_state": use_state,
-                            "prompt_format": PROMPT_FORMAT,
-                            "schema_version": skillset.schema_version,
-                            "policy_version": skillset.policy_version,
-                            "constrained_state_collection": True,
-                            "no_oracle_filtering": True,
-                            "skills_sha256": skillset.content_sha256,
-                            "model": args.model,
-                            "tokenizer": args.tokenizer or args.model,
-                            "temperature": args.temperature,
-                            "state_max_attempts": args.state_max_attempts,
-                            "state_retry_temperature": (
-                                args.state_retry_temperature
-                            ),
-                            "seed": args.seed,
-                            "head_seed": exc.thought_seed,
-                            "state_seed": None,
-                            "state_attempts": state_attempts,
-                            "state_retry_used": state_attempts > 1,
-                            "state_attempt_seeds": [
-                                item["seed"] for item in attempt_records
-                            ],
-                            "state_failure_reasons": failure_reasons,
-                            "state_attempt_records": attempt_records,
-                            "tail_seed": None,
-                            "prompt_text": prompt_text,
-                            "prompt_token_ids": prompt_token_ids,
-                            "raw_head": exc.thought.text,
-                            "raw_tail": "",
-                            "head_token_ids": list(exc.thought.token_ids),
-                            "thought_token_ids": list(exc.thought.token_ids),
-                            "state_token_ids": [],
-                            "hmm_prefix_text": "",
-                            "hmm_prefix_token_ids": [],
-                            "action": "",
-                            "action_token_ids": [],
-                            "tail_token_ids": [],
-                            "hmm_sequence_token_ids": [],
-                            "parse_ok": False,
-                            "parse_errors": exclusion_reasons,
-                            "used_head_repair": not exc.thought.stop_found,
-                            "used_thought_repair": not exc.thought.stop_found,
-                            "used_state_repair": False,
-                            "head_stop_found": False,
-                            "head_truncated": True,
-                            "thought_stop_found": exc.thought.stop_found,
-                            "thought_truncated": exc.thought.truncated,
-                            "state_stop_found": False,
-                            "state_truncated": True,
-                            "tail_stop_found": False,
-                            "tail_truncated": False,
-                            "tail_span_exact": False,
-                            "state_schema_valid": False,
-                            "distill_eligible": False,
-                            "distill_exclusion_reasons": exclusion_reasons,
-                            "action_was_admissible": None,
-                            "admissible_gt": admissible_actions,
-                            "head_latency_seconds": (
-                                exc.thought.latency_seconds + state_latency
-                            ),
-                            "thought_latency_seconds": exc.thought.latency_seconds,
-                            "state_latency_seconds": state_latency,
-                            "action_latency_seconds": 0.0,
-                        }
-                        samples_file.write(json.dumps(failure_record) + "\n")
-                        sample_count += 1
-                        per_format["state"]["samples"] += 1
-                        per_format["state"]["exclusions"].update(
-                            exclusion_reasons
-                        )
-
-                        sample_index += 1
-                        episode_termination_reason = (
-                            "state_generation_exhausted"
-                        )
-                        failure_step = {
-                            "step": step_index,
-                            "sample": None,
-                            "selected_sample": None,
-                            "failed_sample": sample_index - 1,
-                            "sample_attempts": sample_index,
-                            "empty_action_retries": sample_index - 1,
-                            "source": "state_generation_exhausted",
-                            "candidates": candidate_audit,
-                            "selected_model_state": "",
-                            "selected_model_action": "",
-                            "action": "",
-                            "action_taken": "",
-                            "state": "",
-                            "fallback_used": False,
-                            "fallback_reason": "state_generation_exhausted",
-                            "fallback_policy": None,
-                            "termination_reason": "state_generation_exhausted",
-                            "observation": observation,
-                        }
-                        history_audit.append(dict(failure_step))
-                        advance_trace.append(dict(failure_step))
-                        advance_sources.append("state_generation_exhausted")
-                        advance_source_counts["state_generation_exhausted"] += 1
-                        break
-
+                while selected is None and sample_index < args.collection_max_attempts:
+                    turn = backend.generate_turns_training(
+                        prompt_text, skillset, task_key, count=1,
+                        seed_context=(episode_index, step_index, sample_index),
+                    )[0]
                     sampled_turns.append((sample_index, turn))
-                    update_state_retry_counts(
-                        state_retry_counts,
-                        attempts=turn.state_attempts,
-                        exhausted=False,
-                    )
-                    hmm_sequence = (
-                        list(turn.hmm_prefix_token_ids)
-                        + list(turn.tail_token_ids)
-                        + [backend.tokenizer.eos_token_id]
-                    )
-                    exclusion_reasons = distill_exclusion_reasons(
-                        turn,
-                        hmm_sequence,
-                        max_hmm_prefix_tokens=args.max_hmm_prefix_tokens,
-                        max_hmm_sequence_tokens=args.max_hmm_sequence_tokens,
-                    )
-                    distill_eligible = not exclusion_reasons
+                    span = observed_attempt_span(turn, backend.tokenizer.eos_token_id)
+                    exclusion_reasons = span["distill_exclusion_reasons"]
+                    distill_eligible = span["distill_eligible"]
                     action_was_admissible = (
                         turn.parsed.action in admissible_actions
                     )
@@ -1157,16 +985,12 @@ def main():
                         "prompt_format": PROMPT_FORMAT,
                         "schema_version": skillset.schema_version,
                         "policy_version": skillset.policy_version,
-                        "constrained_state_collection": True,
+                        "constrained_state_collection": False,
                         "no_oracle_filtering": True,
                         "skills_sha256": skillset.content_sha256,
                         "model": args.model,
                         "tokenizer": args.tokenizer or args.model,
                         "temperature": args.temperature,
-                        "state_max_attempts": args.state_max_attempts,
-                        "state_retry_temperature": (
-                            args.state_retry_temperature
-                        ),
                         "seed": args.seed,
                         "head_seed": turn.head_seed,
                         "state_seed": turn.state_seed,
@@ -1191,7 +1015,6 @@ def main():
                         "action": turn.parsed.action,
                         "action_token_ids": list(turn.action_token_ids),
                         "tail_token_ids": list(turn.tail_token_ids),
-                        "hmm_sequence_token_ids": hmm_sequence,
                         "parse_ok": turn.parsed.parse_ok,
                         "parse_errors": list(turn.parsed.errors),
                         "used_head_repair": turn.used_head_repair,
@@ -1215,6 +1038,8 @@ def main():
                         "state_latency_seconds": turn.state_latency_seconds,
                         "action_latency_seconds": turn.action_latency_seconds,
                     }
+                    record.update(span)
+                    record.update(collection_max_attempts=args.collection_max_attempts)
                     samples_file.write(json.dumps(record) + "\n")
                     sample_count += 1
                     eligible_count += int(distill_eligible)
@@ -1225,6 +1050,22 @@ def main():
 
                     selected = select_advance_turn(sampled_turns)
                     sample_index += 1
+
+                update_state_retry_counts(state_retry_counts, attempts=sample_index, exhausted=selected is None)
+                if selected is None:
+                    episode_termination_reason = "collection_attempts_exhausted"
+                    failure_step = dict(step=step_index, sample=None, selected_sample=None,
+                        failed_sample=sample_index-1, sample_attempts=sample_index,
+                        empty_action_retries=sample_index-1, source=episode_termination_reason,
+                        candidates=candidate_audit, selected_model_state="", selected_model_action="",
+                        action="", action_taken="", state="", fallback_used=False,
+                        fallback_reason=episode_termination_reason, fallback_policy=None,
+                        termination_reason=episode_termination_reason, observation=observation)
+                    history_audit.append(dict(failure_step))
+                    advance_trace.append(dict(failure_step))
+                    advance_sources.append(episode_termination_reason)
+                    advance_source_counts[episode_termination_reason] += 1
+                    break
 
                 if episode_termination_reason is not None:
                     break

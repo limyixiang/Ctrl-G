@@ -5,7 +5,7 @@ import re
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -14,6 +14,7 @@ from .constraints import (
     action_grammar_valid,
     compile_policy_language,
     state_span_pattern,
+    action_span_pattern,
     dfa_accepts,
     lift_character_fsm,
     parse_state,
@@ -79,8 +80,9 @@ class GenConfig:
     rollout_temperature: float = 0.7
     seed: int = 42
     max_hmm_prefix_tokens: int | None = None
-    state_max_attempts: int = 5
-    state_retry_temperature: float = 0.2
+    collection_max_attempts: int = 5
+    hmm_context_steps: int = 1
+    max_hmm_context_tokens: int = 1024
 
 
 class StructuredOutputMismatchError(RuntimeError):
@@ -182,6 +184,8 @@ class BaseBackend:
             append_fixed(THINK_CLOSE)
 
         used_state_repair = False
+        hmm_target_start = len(token_ids)
+        hmm_observed_head_end = len(token_ids)
         if use_state:
             if state is None:
                 raise ValueError("state generation is required in state mode")
@@ -199,11 +203,14 @@ class BaseBackend:
                 )
             token_ids = combined_ids
             text += state.text
+            hmm_observed_head_end = len(token_ids)
             used_state_repair = not state.stop_found
             if used_state_repair:
                 append_fixed(STATE_CLOSE)
 
         append_fixed(ACTION_OPEN)
+        if not used_state_repair:
+            hmm_observed_head_end = len(token_ids)
         expected = self.tokenizer.decode(token_ids, skip_special_tokens=False)
         if expected != text:
             raise ValueError("assembled head text does not match its exact token IDs")
@@ -225,6 +232,8 @@ class BaseBackend:
             state_chunk=state,
             used_thought_repair=used_thought_repair,
             used_state_repair=used_state_repair,
+            hmm_target_start=hmm_target_start,
+            hmm_observed_head_end=hmm_observed_head_end,
         )
 
     def _generate_head(
@@ -249,7 +258,7 @@ class BaseBackend:
         return self._assemble_head(thought, state, use_state=use_state)
 
     def generate_turn_unconstrained(
-        self, prompt_text: str, *, use_state: bool, greedy: bool = False
+        self, prompt_text: str, *, use_state: bool, greedy: bool = False, evaluation: bool = False
     ) -> TurnGeneration:
         """Sample raw model data for evaluation controls or HMM distillation."""
 
@@ -259,12 +268,8 @@ class BaseBackend:
         action_prompt = prompt_text + head.chunk.text
 
         temperature = None if greedy else self.cfg.rollout_temperature
-        tail = self._generate_until(
-            action_prompt,
-            [ACTION_CLOSE],
-            self.cfg.max_action_tokens,
-            temperature,
-        )
+        tail = (self._generate_evaluation_action(action_prompt) if evaluation else
+                self._generate_until(action_prompt, [ACTION_CLOSE], self.cfg.max_action_tokens, temperature))
         return self._assemble_unconstrained_turn(
             head,
             tail,
@@ -372,7 +377,48 @@ class BaseBackend:
             ),
             used_thought_repair=head.used_thought_repair,
             used_state_repair=head.used_state_repair,
+            hmm_target_token_ids=tuple(
+                head.chunk.token_ids[head.hmm_target_start:head.hmm_observed_head_end]
+                + (tail.token_ids if not head.used_state_repair else ())
+            ),
+            hmm_target_start_in_head=head.hmm_target_start,
+            sampled_head_tokens=len(head.thought_chunk.token_ids) + (len(head.state_chunk.token_ids) if head.state_chunk else 0),
         )
+
+    def generate_turns_training(self, prompt_text, skillset, task_key, *, count,
+                                seed_context=()):
+        """One unmasked draw per attempt; structural retries belong to collection."""
+        if count < 1:
+            raise ValueError("count must be at least one")
+        turns = []
+        for index in range(count):
+            seeds = {}
+            def sample(text, stops, budget, temperature, phase):
+                kwargs = {}
+                if hasattr(self, "_stable_seed"):
+                    seed = self._stable_seed(self.cfg.seed, seed_context, index, phase)
+                    seeds[phase] = seed
+                    kwargs["seed"] = seed
+                return self._generate_until(text, stops, budget, temperature, **kwargs)
+            thought = sample(prompt_text, [THINK_CLOSE], self.cfg.max_thought_tokens,
+                             None, "thought")
+            thought_text = thought.text + (THINK_CLOSE if not thought.stop_found else "")
+            state = sample(prompt_text + thought_text + STATE_OPEN, [STATE_CLOSE],
+                           self.cfg.max_state_tokens, self.cfg.rollout_temperature, "state")
+            head = self._assemble_head(thought, state, use_state=True)
+            tail = (sample(prompt_text + head.chunk.text, [ACTION_CLOSE],
+                           self.cfg.max_action_tokens, self.cfg.rollout_temperature, "action")
+                    if state.stop_found else GeneratedChunk("", (), False, False, 0.0))
+            turn = self._assemble_unconstrained_turn(
+                head, tail, use_state=True, head_seed=seeds.get("thought"),
+                state_seed=seeds.get("state"), tail_seed=seeds.get("action"))
+            try:
+                fields = parse_state(turn.parsed.state, skillset.state_schemas[task_key], skillset)
+            except ValueError:
+                fields = {}
+            turns.append(replace(turn, state_schema_valid=bool(fields), state_fields=fields,
+                                 action_grammar_valid=action_grammar_valid(turn.parsed.action, skillset)))
+        return turns
 
 
 class HFBackend(BaseBackend):
@@ -446,6 +492,62 @@ class HFBackend(BaseBackend):
             truncated=not stop_found,
             latency_seconds=latency,
         )
+
+    def _generate_evaluation_action(self, prompt_text):
+        from transformers import StoppingCriteriaList
+        _synchronize_if_cuda(self.device)
+        started = time.perf_counter()
+        ids = self.tokenizer.encode(prompt_text, add_special_tokens=False, return_tensors="pt").to(self.device)
+        stopper = StopOnStrings([ACTION_CLOSE], self.tokenizer, ids.shape[1])
+        with torch.no_grad():
+            outputs = self.model.generate(input_ids=ids, min_new_tokens=self.cfg.min_action_tokens, max_new_tokens=self.cfg.max_action_tokens,
+                do_sample=self.cfg.do_sample, temperature=self.cfg.temperature if self.cfg.do_sample else None,
+                num_beams=1 if self.cfg.do_sample else self.cfg.beam_size, num_return_sequences=1,
+                stopping_criteria=StoppingCriteriaList([stopper]), pad_token_id=self.tokenizer.eos_token_id)
+        text, generated, found = _crop_chunk_at_stop(self.tokenizer, outputs[0][ids.shape[1]:].tolist(), [ACTION_CLOSE])
+        _synchronize_if_cuda(self.device)
+        return GeneratedChunk(text, tuple(generated), found, not found, time.perf_counter()-started)
+
+    def _generate_state_hmm_span(self, prompt_text, graph, context, skillset, *, greedy):
+        import ctrlg
+        from ctrlg.utils import dfa_completion_log_probs, matmul_a_logb
+        from transformers import LogitsProcessorList, StoppingCriteriaList
+        _synchronize_if_cuda(self.device)
+        started = time.perf_counter()
+        if not hasattr(self, "_state_terminal_cache"):
+            self._state_terminal_cache = {}
+        key = (skillset.content_sha256, self.cfg.min_action_tokens, self.cfg.max_action_tokens)
+        terminal = self._state_terminal_cache.get(key)
+        if terminal is None:
+            action_graph = lift_character_fsm(regex_fsm(action_span_pattern(skillset)), self.tokenizer, self.vocab_size)
+            action_dfa = ctrlg.DFAModel(action_graph, self.vocab_size, dense_token_mask=False).to(self.device)
+            terminal = dfa_completion_log_probs(self.hmm_model, action_dfa,
+                self.cfg.min_action_tokens, self.cfg.max_action_tokens, [self.hmm_model.eos_token_id])
+            for token in reversed(self.tokenizer.encode(ACTION_OPEN, add_special_tokens=False)):
+                terminal = self.hmm_model.beta[:, token] + matmul_a_logb(
+                    self.hmm_model.alpha_exp, terminal[:, None]).squeeze(-1)
+            self._state_terminal_cache[key] = terminal
+        ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+        dfa = ctrlg.DFAModel(graph, self.vocab_size, dense_token_mask=False).to(self.device)
+        prefix = list(context.token_ids) + self.tokenizer.encode(STATE_OPEN, add_special_tokens=False)
+        processor = ctrlg.ConstraintLogitsProcessor(self.hmm_model, dfa, 1,
+            self.cfg.max_state_tokens, ids, prefix_ids=prefix, suffix_ids=[],
+            terminal_log_probs=terminal, temperature=1.0)
+        hard = HardDFALogitsProcessor(graph, prompt_length=len(ids),
+            max_new_tokens=self.cfg.max_state_tokens, eos_token_id=self.tokenizer.eos_token_id)
+        stopper = StopOnStrings([STATE_CLOSE], self.tokenizer, len(ids))
+        with torch.no_grad():
+            outputs = self.model.generate(input_ids=torch.tensor([ids], device=self.device),
+                max_new_tokens=self.cfg.max_state_tokens, do_sample=not greedy,
+                temperature=self.cfg.rollout_temperature if not greedy else None,
+                num_beams=1, num_return_sequences=1,
+                logits_processor=LogitsProcessorList([processor, hard]),
+                stopping_criteria=StoppingCriteriaList([stopper]), pad_token_id=self.tokenizer.eos_token_id)
+        text, tokens, found = _crop_chunk_at_stop(self.tokenizer, outputs[0][len(ids):].tolist(), [STATE_CLOSE])
+        if not found or not dfa_accepts(graph, tokens):
+            raise RuntimeError("Ctrl-G did not complete a state within the state budget")
+        _synchronize_if_cuda(self.device)
+        return GeneratedChunk(text, tuple(tokens), found, not found, time.perf_counter()-started)
 
     def _generate_dfa_span(
         self,
@@ -540,10 +642,10 @@ class HFBackend(BaseBackend):
                 temperature=self.cfg.temperature if self.cfg.do_sample else None,
                 num_beams=1 if self.cfg.do_sample else self.cfg.beam_size,
                 num_return_sequences=(
-                    self.cfg.beam_size if not self.cfg.do_sample else 1
+                    1
                 ),
                 min_new_tokens=self.cfg.min_action_tokens,
-                max_new_tokens=self.cfg.max_action_tokens,
+                max_new_tokens=self.cfg.max_action_tokens + 1,
                 logits_processor=LogitsProcessorList([processor]),
                 pad_token_id=self.tokenizer.eos_token_id,
             )
@@ -554,10 +656,10 @@ class HFBackend(BaseBackend):
             self.hmm_model.eos_token_id,
         )
         # The Ctrl-G processor keeps large DFA/HMM lookahead caches that are no
-        # longer needed while the base model reranks completed candidates.
+        # longer needed once the selected beam has been extracted.
         del processor, dfa_model, outputs
         # Beam search can also return incomplete or impossible beams. They must
-        # not win the base-model rerank even if their raw likelihood is high.
+        # never be selected, regardless of their decoding score.
         candidates = [
             candidate for candidate in candidates
             if dfa_accepts(dfa_graph, candidate)
@@ -565,10 +667,6 @@ class HFBackend(BaseBackend):
         if not candidates:
             raise RuntimeError(
                 "Ctrl-G produced no completed action accepted by the policy action DFA"
-            )
-        if len(candidates) > 1:
-            candidates = ctrlg.rank_generated_ids(
-                self.model, candidates, prompt_ids, suffix_ids
             )
         selected_ids = tuple(candidates[0])
         if not dfa_accepts(dfa_graph, selected_ids):
@@ -588,10 +686,11 @@ class HFBackend(BaseBackend):
             stop_found=text.endswith(ACTION_CLOSE),
             truncated=not text.endswith(ACTION_CLOSE),
             latency_seconds=latency,
+            generated_eos_tokens=1,
         )
 
     def _strict_head(
-        self, prompt_text: str, skillset: SkillSet, task_key: str, *, greedy: bool
+        self, prompt_text: str, skillset: SkillSet, task_key: str, *, greedy: bool, hmm_context=None
     ) -> HeadGeneration:
         temperature = None if greedy else self.cfg.rollout_temperature
         thought = self._generate_until(
@@ -599,6 +698,7 @@ class HFBackend(BaseBackend):
         )
         thought_text = thought.text + (THINK_CLOSE if not thought.stop_found else "")
         state_prompt = prompt_text + thought_text + STATE_OPEN
+        compile_started = time.perf_counter()
         cache_key = (
             getattr(self.tokenizer, "name_or_path", type(self.tokenizer).__name__),
             skillset.content_sha256, task_key, self.vocab_size,
@@ -610,13 +710,13 @@ class HFBackend(BaseBackend):
             pattern = state_span_pattern(skillset.state_schemas[task_key], skillset)
             graph = lift_character_fsm(regex_fsm(pattern), self.tokenizer, self.vocab_size)
             self._state_dfa_cache[cache_key] = graph
-        state = self._generate_dfa_span(
-            state_prompt,
-            graph,
-            stop_string=STATE_CLOSE,
-            max_new_tokens=self.cfg.max_state_tokens,
-            sample=not greedy,
-        )
+        compile_latency = time.perf_counter() - compile_started
+        if hmm_context is not None:
+            state = self._generate_state_hmm_span(state_prompt, graph, hmm_context, skillset, greedy=greedy)
+        else:
+            state = self._generate_dfa_span(state_prompt, graph, stop_string=STATE_CLOSE,
+                max_new_tokens=self.cfg.max_state_tokens, sample=not greedy)
+        state = replace(state, latency_seconds=state.latency_seconds + compile_latency)
         return self._assemble_head(thought, state, use_state=True)
 
     def generate_turn(
@@ -627,15 +727,22 @@ class HFBackend(BaseBackend):
         *,
         constrained: bool,
         greedy_head: bool = True,
+        hmm_context=None,
     ) -> TurnGeneration:
         """Generate one fair control or schema/policy-constrained turn."""
 
         if not constrained:
             return self.generate_turn_unconstrained(
-                prompt_text, use_state=True, greedy=greedy_head
+                prompt_text, use_state=True, greedy=greedy_head, evaluation=True
             )
-        head = self._strict_head(prompt_text, skillset, task_key, greedy=greedy_head)
+        if hmm_context is None:
+            raise ValueError("state_ctrlg requires explicit observable HMM context")
+        if self.hmm_model is None:
+            raise ValueError("state_ctrlg requires a joint state/action HMM checkpoint")
+        head = self._strict_head(prompt_text, skillset, task_key, greedy=greedy_head,
+                                 **({"hmm_context": hmm_context} if hmm_context is not None else {}))
         action_prompt = prompt_text + head.chunk.text
+        action_started = time.perf_counter()
 
         state_fields = parse_state(
             parse_turn(head.chunk.text, "x</action>", use_state=True).state,
@@ -666,6 +773,9 @@ class HFBackend(BaseBackend):
         except ValueError:
             prefix_ids = []
 
+        if hmm_context is not None:
+            prefix_ids = list(hmm_context.token_ids) + prefix_ids if prefix_ids else []
+
         # The HMM prefix begins after native thinking. A repaired thought close
         # is therefore outside the HMM sequence, but a repaired state close
         # makes the state/action prefix synthetic and cannot be used.
@@ -688,7 +798,8 @@ class HFBackend(BaseBackend):
                 max_new_tokens=self.cfg.max_action_tokens,
                 sample=self.cfg.do_sample,
             )
-        action_latency = action_chunk.latency_seconds
+        _synchronize_if_cuda(self.device)
+        action_latency = time.perf_counter() - action_started
         raw_tail = action_chunk.text
         tail_ids = action_chunk.token_ids
         tail_stop_found = action_chunk.stop_found
@@ -710,12 +821,18 @@ class HFBackend(BaseBackend):
         return TurnGeneration(
             parsed=parsed,
             head_token_ids=head.chunk.token_ids,
+            sampled_head_tokens=len(head.thought_chunk.token_ids) + len(head.state_chunk.token_ids),
+            generated_eos_tokens=action_chunk.generated_eos_tokens,
             action_token_ids=tuple(action_ids),
             tail_token_ids=tuple(tail_ids),
             hmm_prefix_token_ids=tuple(prefix_ids),
             head_latency_seconds=head.chunk.latency_seconds,
             action_latency_seconds=action_latency,
             used_head_repair=head.used_repair,
+            state_hmm_applied=hmm_context is not None,
+            state_hmm_skip_reason=None if hmm_context is not None else "missing_hmm_context",
+            hmm_context_token_ids=tuple(hmm_context.token_ids) if hmm_context is not None else (),
+            hmm_context_truncated=hmm_context.truncated if hmm_context is not None else False,
             hmm_applied=effective_hmm,
             hmm_skip_reason=hmm_skip_reason,
             head_stop_found=head.chunk.stop_found,
@@ -759,34 +876,10 @@ class HFBackend(BaseBackend):
             policy_fallback_reason=policy.fallback_reason,
         )
 
-    def generate_turns_training(
-        self,
-        prompt_text: str,
-        skillset: SkillSet,
-        task_key: str,
-        *,
-        count: int,
-        seed_context: tuple[int, ...] = (),
-    ) -> list[TurnGeneration]:
-        """Hard-schema states followed by unconstrained sampled actions."""
-
-        turns = []
-        for _ in range(count):
-            head = self._strict_head(prompt_text, skillset, task_key, greedy=True)
-            tail = self._generate_until(
-                prompt_text + head.chunk.text,
-                [ACTION_CLOSE],
-                self.cfg.max_action_tokens,
-                self.cfg.rollout_temperature,
-            )
-            turn = self._assemble_unconstrained_turn(head, tail, use_state=True)
-            fields = parse_state(
-                turn.parsed.state, skillset.state_schemas[task_key], skillset
-            )
-            turns.append(TurnGeneration(
-                **{**turn.__dict__, "state_schema_valid": True, "state_fields": fields}
-            ))
-        return turns
+    def generate_turns_training(self, prompt_text, skillset, task_key, *, count,
+                                seed_context=()):
+        return super().generate_turns_training(
+            prompt_text, skillset, task_key, count=count, seed_context=seed_context)
 
 
 class VLLMBackend(BaseBackend):
@@ -1033,192 +1126,7 @@ class VLLMBackend(BaseBackend):
             )
         ]
 
-    def generate_turns_training(
-        self,
-        prompt_text: str,
-        skillset: SkillSet,
-        task_key: str,
-        *,
-        count: int,
-        seed_context: tuple[int, ...] = (),
-    ) -> list[TurnGeneration]:
-        """Collect hard states with bounded retries, then sampled actions."""
-
-        if count < 1:
-            raise ValueError("count must be at least one")
-        head_temperature = None
-        action_temperature = self.cfg.rollout_temperature
-        thought_seeds = [
-            self._stable_seed(self.cfg.seed, seed_context, index, "thought")
-            for index in range(count)
-        ]
-        action_seeds = [
-            self._stable_seed(self.cfg.seed, seed_context, index, "action")
-            for index in range(count)
-        ]
-        thoughts = self._generate_batch_until(
-            [prompt_text] * count, [THINK_CLOSE], self.cfg.max_thought_tokens,
-            head_temperature, thought_seeds,
-        )
-        state_prompts = [
-            prompt_text + thought.text
-            + (THINK_CLOSE if not thought.stop_found else "") + STATE_OPEN
-            for thought in thoughts
-        ]
-        pattern = state_span_pattern(skillset.state_schemas[task_key], skillset)
-        if self.cfg.state_max_attempts < 1:
-            raise ValueError("state_max_attempts must be at least one")
-        if (
-            self.cfg.state_max_attempts > 1
-            and self.cfg.state_retry_temperature <= 0
-        ):
-            raise ValueError(
-                "state_retry_temperature must be positive when retries are enabled"
-            )
-
-        states = []
-        state_seeds = []
-        state_attempt_records = []
-        for candidate_index, (thought, thought_seed, state_prompt) in enumerate(
-            zip(thoughts, thought_seeds, state_prompts)
-        ):
-            failed_records = []
-            attempt_seeds = []
-            state = None
-            for attempt_index in range(self.cfg.state_max_attempts):
-                phase = (
-                    "state"
-                    if attempt_index == 0
-                    else f"state_retry_{attempt_index}"
-                )
-                attempt_seed = self._stable_seed(
-                    self.cfg.seed, seed_context, candidate_index, phase
-                )
-                attempt_seeds.append(attempt_seed)
-                attempt_temperature = (
-                    head_temperature
-                    if attempt_index == 0
-                    else self.cfg.state_retry_temperature
-                )
-                try:
-                    state = self._generate_until(
-                        state_prompt,
-                        [STATE_CLOSE],
-                        self.cfg.max_state_tokens,
-                        attempt_temperature,
-                        seed=attempt_seed,
-                        guided_regex=pattern,
-                    )
-                except StructuredOutputMismatchError as exc:
-                    failed_records.append(
-                        {
-                            "attempt": attempt_index + 1,
-                            "seed": attempt_seed,
-                            "temperature": (
-                                0.0
-                                if attempt_temperature is None
-                                else attempt_temperature
-                            ),
-                            "reason": exc.reason,
-                            "num_tokens": exc.chunk.num_tokens,
-                            "latency_seconds": exc.chunk.latency_seconds,
-                        }
-                    )
-                    continue
-                try:
-                    state_body = state.text.split(STATE_CLOSE, 1)[0].strip()
-                    parse_state(
-                        state_body,
-                        skillset.state_schemas[task_key],
-                        skillset,
-                    )
-                except ValueError:
-                    failed_records.append(
-                        {
-                            "attempt": attempt_index + 1,
-                            "seed": attempt_seed,
-                            "temperature": (
-                                0.0
-                                if attempt_temperature is None
-                                else attempt_temperature
-                            ),
-                            "reason": "state_parse_failure",
-                            "num_tokens": state.num_tokens,
-                            "latency_seconds": state.latency_seconds,
-                        }
-                    )
-                    state = None
-                    continue
-                break
-
-            if state is None:
-                raise StateGenerationExhausted(
-                    thought=thought,
-                    thought_seed=thought_seed,
-                    attempt_records=tuple(failed_records),
-                )
-
-            # Latency metrics should include failed constrained attempts that
-            # preceded the accepted state, while token IDs remain those of
-            # the accepted span only.
-            failed_latency = sum(
-                record["latency_seconds"] for record in failed_records
-            )
-            if failed_latency:
-                state = GeneratedChunk(
-                    text=state.text,
-                    token_ids=state.token_ids,
-                    stop_found=state.stop_found,
-                    truncated=state.truncated,
-                    latency_seconds=state.latency_seconds + failed_latency,
-                )
-            states.append(state)
-            state_seeds.append(attempt_seeds[-1])
-            state_attempt_records.append(
-                {
-                    "attempt_seeds": tuple(attempt_seeds),
-                    "failure_reasons": tuple(
-                        record["reason"] for record in failed_records
-                    ),
-                }
-            )
-        heads = [
-            self._assemble_head(thought, state, use_state=True)
-            for thought, state in zip(thoughts, states)
-        ]
-        tails = self._generate_batch_until(
-            [prompt_text + head.chunk.text for head in heads],
-            [ACTION_CLOSE], self.cfg.max_action_tokens, action_temperature, action_seeds,
-        )
-        turns = []
-        for head, tail, thought_seed, state_seed, action_seed, attempt_record in zip(
-            heads,
-            tails,
-            thought_seeds,
-            state_seeds,
-            action_seeds,
-            state_attempt_records,
-        ):
-            turn = self._assemble_unconstrained_turn(
-                head, tail, use_state=True, head_seed=thought_seed,
-                state_seed=state_seed, tail_seed=action_seed,
-            )
-            fields = parse_state(
-                turn.parsed.state, skillset.state_schemas[task_key], skillset
-            )
-            turns.append(TurnGeneration(
-                **{
-                    **turn.__dict__,
-                    "state_schema_valid": True,
-                    "state_fields": fields,
-                    "state_attempts": len(attempt_record["attempt_seeds"]),
-                    "state_retry_used": bool(
-                        attempt_record["failure_reasons"]
-                    ),
-                    "state_attempt_seeds": attempt_record["attempt_seeds"],
-                    "state_failure_reasons": attempt_record[
-                        "failure_reasons"
-                    ],
-                }
-            ))
-        return turns
+    def generate_turns_training(self, prompt_text, skillset, task_key, *, count,
+                                seed_context=()):
+        return super().generate_turns_training(
+            prompt_text, skillset, task_key, count=count, seed_context=seed_context)

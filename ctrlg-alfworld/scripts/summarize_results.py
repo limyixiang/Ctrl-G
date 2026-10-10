@@ -12,10 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ctrlg_alfworld.experiment import condition_choices, get_condition
 from ctrlg_alfworld.prompts import PROMPT_FORMAT
+from ctrlg_alfworld.hmm_context import HMM_CONTEXT_FORMAT, HMM_SEQUENCE_FORMAT
 
 
 COMPARABILITY_FIELDS = (
     "model", "tokenizer", "prompt_format", "split", "seed", "max_steps", "beam_size", "max_thought_tokens",
+    "hmm_sequence_format", "hmm_context_format", "hmm_context_steps", "max_hmm_context_tokens",
     "max_state_tokens",
     "max_action_tokens", "min_action_tokens", "temperature",
     "rollout_temperature", "max_hmm_prefix_tokens", "num_episodes",
@@ -74,8 +76,17 @@ def validate_comparable(summaries: dict[str, dict]) -> None:
             problems.append(f"state_ctrlg: HMM provenance {field} mismatch")
     if provenance.get("no_oracle_filtering") is not True:
         problems.append("state_ctrlg: HMM provenance permits oracle filtering")
-    if provenance.get("constrained_state_collection") is not True:
-        problems.append("state_ctrlg: HMM was not collected under hard states")
+    if provenance.get("constrained_state_collection") is not False:
+        problems.append("state_ctrlg: HMM was not collected from unmasked attempts")
+    if provenance.get("selection_policy") != "all_observed_attempts":
+        problems.append("state_ctrlg: HMM must retain all observed attempts")
+    for field in ("hmm_sequence_format", "hmm_context_format", "hmm_context_steps", "max_hmm_context_tokens"):
+        if provenance.get(field) != candidate.get(field):
+            problems.append(f"state_ctrlg: HMM provenance {field} mismatch")
+    if provenance.get("hmm_sequence_format") != HMM_SEQUENCE_FORMAT or provenance.get("hmm_context_format") != HMM_CONTEXT_FORMAT:
+        problems.append("state_ctrlg: obsolete HMM sequence/context format")
+    if candidate.get("hmm_scope") != "state_and_action":
+        problems.append("state_ctrlg: expected state and action HMM guidance")
     if problems:
         raise ValueError(
             "condition summaries are not a comparable matched pair:\n- "
@@ -100,11 +111,12 @@ def main():
     metric_names = (
         "success_rate", "admissibility_rate", "state_schema_validity_rate",
         "action_grammar_validity_rate", "policy_adherence_rate",
-        "policy_fallback_rate", "hmm_applied_rate",
+        "policy_fallback_rate", "hmm_applied_rate", "state_hmm_applied_rate",
+        "hmm_context_truncation_rate",
         "head_truncation_rate", "tail_truncation_rate", "exact_tail_span_rate",
         "mean_prompt_tokens_per_action", "mean_thought_tokens_per_action",
         "mean_state_tokens_per_action", "mean_generated_tokens_per_action",
-        "mean_head_latency_seconds", "mean_action_latency_seconds",
+        "mean_head_latency_seconds", "mean_state_latency_seconds", "mean_action_latency_seconds",
     )
     table = {
         condition: {

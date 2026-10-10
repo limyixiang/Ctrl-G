@@ -7,6 +7,7 @@ from .prompts import (
     render_prompt,
     task_key_from_gamefile
 )
+from .hmm_context import build_hmm_context
 from .experiment import ExperimentCondition, get_condition
 from .skills import SkillSet
 from .constraints import (
@@ -84,6 +85,12 @@ class StepRecord:
     policy_evaluable: bool
     policy_satisfied: bool | None
     policy_fallback_reason: str | None
+    state_hmm_applied: bool = False
+    state_hmm_skip_reason: str | None = None
+    hmm_context_tokens: int = 0
+    hmm_context_truncated: bool = False
+    hmm_context_text: str = ""
+    generated_eos_tokens: int = 0
 
 
 @dataclass
@@ -149,12 +156,17 @@ def run_episode(
         if verbose and t == 0:
             print(user_prompt)
 
+        cfg = getattr(backend, "cfg", None)
+        context = build_hmm_context(backend.tokenizer, task_description, initial_obs,
+            obs, steps, k=getattr(cfg, "hmm_context_steps", 1),
+            max_tokens=getattr(cfg, "max_hmm_context_tokens", 1024))
         turn = backend.generate_turn(
             prompt_text,
             skillset,
             task_key,
             constrained=condition.use_state_dfa,
             greedy_head=greedy_head,
+            hmm_context=context,
         )
         action = turn.parsed.action
 
@@ -208,6 +220,11 @@ def run_episode(
             state_truncated=turn.state_truncated,
             tail_truncated=turn.tail_truncated,
             tail_span_exact=turn.tail_span_exact,
+            state_hmm_applied=turn.state_hmm_applied,
+            state_hmm_skip_reason=turn.state_hmm_skip_reason,
+            hmm_context_tokens=len(context.token_ids),
+            hmm_context_truncated=context.truncated,
+            hmm_context_text=context.text,
             hmm_applied=turn.hmm_applied,
             hmm_skip_reason=turn.hmm_skip_reason,
             hmm_prefix_text=turn.parsed.hmm_prefix_text,
@@ -218,6 +235,7 @@ def run_episode(
             thought_tokens=len(turn.thought_token_ids),
             state_tokens=len(turn.state_token_ids),
             generated_tokens=turn.total_generated_tokens,
+            generated_eos_tokens=turn.generated_eos_tokens,
             head_latency_seconds=turn.head_latency_seconds,
             thought_latency_seconds=turn.thought_latency_seconds,
             state_latency_seconds=turn.state_latency_seconds,

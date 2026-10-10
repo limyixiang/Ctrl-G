@@ -87,7 +87,10 @@ def select_best_checkpoint(log_path: str | Path, model_path: str | Path) -> dict
         key=lambda item: (item["dev_log_likelihood"], item["checkpoint"]),
     )
     return {
-        "selection_metric": "mean_dev_log_likelihood_per_sequence",
+        "selection_metric": ("mean_output_conditional_dev_log_likelihood_per_attempt"
+                             if "# dev_score=mean_output_conditional_log_likelihood_per_attempt"
+                             in log_path.read_text(encoding="utf-8")
+                             else "mean_dev_log_likelihood_per_sequence"),
         "selection_rule": "maximum; latest checkpoint breaks exact ties",
         "training_log": str(log_path.resolve()),
         "candidates": candidates,

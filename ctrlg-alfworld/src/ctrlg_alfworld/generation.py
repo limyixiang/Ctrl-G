@@ -58,6 +58,7 @@ class GeneratedChunk:
     stop_found: bool
     truncated: bool
     latency_seconds: float
+    generated_eos_tokens: int = 0
 
     @property
     def num_tokens(self) -> int:
@@ -73,6 +74,8 @@ class HeadGeneration:
     state_chunk: GeneratedChunk | None
     used_thought_repair: bool = False
     used_state_repair: bool = False
+    hmm_target_start: int = 0
+    hmm_observed_head_end: int = 0
 
     @property
     def used_repair(self) -> bool:
@@ -121,10 +124,19 @@ class TurnGeneration:
     policy_evaluable: bool = False
     policy_satisfied: bool | None = None
     policy_fallback_reason: str | None = None
+    hmm_target_token_ids: tuple[int, ...] = ()
+    hmm_target_start_in_head: int = 0
+    state_hmm_applied: bool = False
+    state_hmm_skip_reason: str | None = None
+    hmm_context_token_ids: tuple[int, ...] = ()
+    hmm_context_truncated: bool = False
+    sampled_head_tokens: int | None = None
+    generated_eos_tokens: int = 0
 
     @property
     def total_generated_tokens(self) -> int:
-        return len(self.head_token_ids) + len(self.tail_token_ids)
+        head_count = len(self.head_token_ids) if self.sampled_head_tokens is None else self.sampled_head_tokens
+        return head_count + len(self.tail_token_ids) + self.generated_eos_tokens
 
     @property
     def total_latency_seconds(self) -> float:

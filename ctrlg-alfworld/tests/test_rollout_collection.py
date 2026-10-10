@@ -39,6 +39,8 @@ def make_turn(
         thought_truncated=thought_truncated,
         state_truncated=state_truncated,
         tail_truncated=tail_truncated,
+        state_stop_found=not state_truncated, state_schema_valid=parse_ok,
+        tail_stop_found=action_close_found, action_grammar_valid=bool(action),
         tail_span_exact=tail_span_exact,
         hmm_prefix_token_ids=hmm_prefix_token_ids,
     )
@@ -510,12 +512,12 @@ class RolloutCollectionTests(unittest.TestCase):
         history["steps"][0]["sample_attempts"] = 3
         self.assertFalse(run_rollouts._history_matches_episode(history, episode))
 
-    def test_selection_uses_first_nonempty_even_if_parse_is_malformed(self):
+    def test_selection_skips_malformed_state(self):
         malformed = make_turn(parse_ok=False, action="look")
         well_formed = make_turn(parse_ok=True, action="look")
         self.assertEqual(
             run_rollouts.select_advance_turn([(0, malformed), (1, well_formed)]),
-            (0, malformed),
+            (1, well_formed),
         )
 
     def test_selection_uses_first_nonempty_even_if_head_was_repaired(self):
@@ -529,7 +531,7 @@ class RolloutCollectionTests(unittest.TestCase):
         )
 
     def test_selection_skips_empty_sample_and_uses_later_action(self):
-        nonempty = make_turn(parse_ok=False, action="look")
+        nonempty = make_turn(parse_ok=True, action="look")
         self.assertEqual(
             run_rollouts.select_advance_turn(
                 [

@@ -12,6 +12,9 @@ SPEC.loader.exec_module(module)
 
 def summaries():
     shared = {
+        "hmm_sequence_format": "context_state_action_censored_v1",
+        "hmm_context_format": "observable_trajectory_json_v1",
+        "hmm_context_steps": 1, "max_hmm_context_tokens": 1024,
         "model": "m", "tokenizer": "m",
         "prompt_format": "state_with_persistent_history_no_oracle_v1",
         "split": "eval_out_of_distribution", "seed": 42,
@@ -32,14 +35,18 @@ def summaries():
                     "use_action_dfa": False, "use_hmm": False},
     }
     treatment = {
-        **shared, "condition": "state_ctrlg", "hmm": "h",
+        **shared, "hmm_scope": "state_and_action", "condition": "state_ctrlg", "hmm": "h",
         "hmm_sha256": "hh",
         "factors": {"use_state": True, "use_state_dfa": True,
                     "use_action_dfa": True, "use_hmm": True},
         "hmm_provenance": {
             "skills_sha256": "s", "schema_version": 1, "policy_version": 1,
             "no_oracle_filtering": True,
-            "constrained_state_collection": True,
+            "constrained_state_collection": False,
+                "hmm_sequence_format": "context_state_action_censored_v1",
+                "hmm_context_format": "observable_trajectory_json_v1",
+                "hmm_context_steps": 1, "max_hmm_context_tokens": 1024,
+                "selection_policy": "all_observed_attempts",
             "model": "m", "tokenizer": "m",
             "prompt_format": "state_with_persistent_history_no_oracle_v1",
         },

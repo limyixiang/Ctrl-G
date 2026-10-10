@@ -44,8 +44,8 @@ def load_examples(sequences_file, embeddings_file, eos_token_id):
     if seqs.shape[0] == 0 or seqs.shape[1] == 0:
         raise ValueError('LVD sequences are empty')
 
-    eos = seqs.eq(eos_token_id).numpy()
-    lengths = numpy.where(eos.any(axis=1), eos.argmax(axis=1),
+    end = (seqs.eq(eos_token_id) | seqs.eq(-2)).numpy()
+    lengths = numpy.where(end.any(axis=1), end.argmax(axis=1),
         seqs.shape[1]).astype(numpy.int64)
     offsets = numpy.zeros(len(lengths) + 1, dtype=numpy.int64)
     numpy.cumsum(lengths, out=offsets[1:])
@@ -163,7 +163,7 @@ def assign_clusters(kmeans, seqs, embeddings, offsets, batch_size):
 
 
 def update_flows(alpha, beta, gamma, labels, token_ids, lengths, offsets,
-        sequence_length, hidden_states, eos_token_id):
+        sequence_length, hidden_states, eos_token_id, completed=None):
     """Count emissions, initial states, and within-sequence transitions."""
     alpha_counts = alpha.numpy()
     beta_counts = beta.numpy()
@@ -184,6 +184,8 @@ def update_flows(alpha, beta, gamma, labels, token_ids, lengths, offsets,
         numpy.add.at(alpha_counts,
             (labels[:-1][adjacent], labels[1:][adjacent]), 1.0)
     has_eos = nonempty & (lengths < sequence_length)
+    if completed is not None:
+        has_eos &= completed
     last_with_eos = offsets[1:][has_eos] - 1
     numpy.add.at(alpha_counts,
         (labels[last_with_eos], hidden_states - 1), 1.0)
@@ -235,8 +237,10 @@ def main():
     beta = torch.zeros(hidden_states, vocab_size)
     gamma = torch.zeros(hidden_states)
     print('computing flows ...', flush=True)
+    completed = numpy.array([length < seqs.shape[1] and int(seqs[row, length]) == eos_token_id
+                             for row, length in enumerate(lengths)])
     update_flows(alpha, beta, gamma, labels, token_ids, lengths, offsets,
-        seqs.shape[1], hidden_states, eos_token_id)
+        seqs.shape[1], hidden_states, eos_token_id, completed=completed)
     del labels, token_ids, seqs
 
     print(f'storing parameters to {args.output_file} ...', flush=True)

@@ -43,9 +43,11 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --condition "$CONDITION" \
   "${HMM_ARGS[@]}" \
   --num_episodes "$EPISODES" \
+  --hmm_context_steps "${HMM_CONTEXT_STEPS:-1}" \
+  --max_hmm_context_tokens "${MAX_HMM_CONTEXT_TOKENS:-1024}" \
   --beam_size "$BEAM_SIZE" \
   --seed "$SEED" \
   --out "$OUTPUT"
 
-# MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_model_9b/checkpoint-112' OUTPUT='results/alfworld/pair_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
-# MODEL='Qwen/Qwen3.5-4B' HMM='results/alfworld/hmm_model_4b/checkpoint-112' OUTPUT='results/alfworld/pair_4b' sbatch --dependency=afterok:907490 ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_context_model_9b_v1/checkpoint-112' OUTPUT='results/alfworld/pair_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-4B' HMM='results/alfworld/hmm_context_model_4b_v1/checkpoint-112' OUTPUT='results/alfworld/pair_4b' sbatch --dependency=afterok:907490 ctrlg-alfworld/slurm/eval_grid.sh

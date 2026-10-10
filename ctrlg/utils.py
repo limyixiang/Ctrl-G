@@ -64,6 +64,8 @@ def matmul_log(A, B):
     bd = len(B.shape) - 2
     A_max = torch.amax(A, dim=-1, keepdim=True)
     B_max = torch.amax(B, dim=bd, keepdim=True)
+    A_max = torch.where(torch.isfinite(A_max), A_max, 0.0)
+    B_max = torch.where(torch.isfinite(B_max), B_max, 0.0)
     A = A - A_max
     B = B - B_max
     A.exp_()
@@ -78,6 +80,7 @@ def matmul_log(A, B):
 def matmul_loga_b(A, B):
     """Mixed matmul, A in log space and B in probability space: returns log(exp(A) @ B)."""
     A_max = torch.amax(A, dim=-1, keepdim=True)
+    A_max = torch.where(torch.isfinite(A_max), A_max, 0.0)
     A = A - A_max
     A.exp_()
     C = torch.matmul(A, B)
@@ -91,6 +94,7 @@ def matmul_a_logb(A, B):
     """Mixed matmul, A in probability space and B in log space: returns log(A @ exp(B))."""
     bd = len(B.shape) - 2
     B_max = torch.amax(B, dim=bd, keepdim=True)
+    B_max = torch.where(torch.isfinite(B_max), B_max, 0.0)
     B = B - B_max
     B.exp_()
     C = torch.matmul(A, B)
@@ -139,7 +143,7 @@ def aggregate_edge_weights(E2S, y, num_states):
     y = torch.exp(y - y_max)
     y_out.scatter_reduce_(0, E2S_, y, reduce='sum')
     y_out.log_()
-    y_out.nan_to_num(neginf=-1e30)
+    y_out.nan_to_num_(neginf=-1e30)
     y_out += y_out_max
 
     return y_out
@@ -219,6 +223,63 @@ def ends_at(prefix, suffix,
 
 
 
+def dfa_completion_log_probs(hmm_model, dfa_model, min_tokens, max_tokens, suffix_ids):
+    """Probability of a bounded DFA span + suffix, before its first emission.
+
+    This rolling backward pass retains only two DFA/HMM layers. It is used
+    at the state/action boundary so state guidance includes an action future.
+    """
+    if not 0 <= min_tokens <= max_tokens:
+        raise ValueError("invalid completion token range")
+    beta, transition = hmm_model.beta, hmm_model.alpha_exp
+    device = beta.device
+    end = torch.zeros(hmm_model.hidden_states, device=device)
+    # compute the fixed suffix probability
+    for token in reversed(suffix_ids):
+        end = beta[:, token] + matmul_a_logb(transition, end[:, None]).squeeze(-1)
+    # initialize the zero-token completion table
+    layers = torch.full((dfa_model.num_states, hmm_model.hidden_states), -1e30, device=device)
+    # at any accepting DFA state, remaining cost is suffix probability
+    layers[list(dfa_model.accept_states)] = end
+    reverse = {state: set() for state in range(dfa_model.num_states)}
+    # backward traversal
+    for source, edges in dfa_model.G.items():
+        for destination, _ in edges:
+            reverse[destination].add(source)
+    live = set(dfa_model.accept_states) # set of states that have a possibility of reaching acceptance
+    pending = list(live)
+    while pending:
+        for source in reverse[pending.pop()]:
+            if source not in live:
+                live.add(source)
+                pending.append(source)
+    indices = [index for index, destination in enumerate(dfa_model.E2Dst.tolist()) if destination in live]
+    if not indices:
+        return layers[dfa_model.initial_state]
+    sources, destinations = dfa_model.E2Src[indices], dfa_model.E2Dst[indices]
+    weights = []
+    for source, destination in zip(sources.tolist(), destinations.tolist()):
+        # find the tokens allowed on the edge
+        labels = next(mask.nonzero()[0] for dest, mask in dfa_model.G[source] if dest == destination)
+        # initialize one score per HMM hidden state
+        weight = torch.full((hmm_model.hidden_states,), -1e30, device=device)
+        # sum allowed-token probabilities in chunks
+        for offset in range(0, len(labels), 1024):
+            ids = torch.as_tensor(labels[offset:offset+1024], device=device)
+            weight = torch.logaddexp(weight, torch.logsumexp(beta[:, ids], dim=1))
+        weights.append(weight)
+    # [number of retained DFA edges, number of HMM hidden states]
+    weights = torch.stack(weights)
+    result = layers[dfa_model.initial_state].clone() if min_tokens == 0 else torch.full_like(end, -1e30)
+    for length in range(1, max_tokens + 1):
+        future = matmul_loga_b(layers, transition.T)
+        edges = weights + distribute_state_weights(destinations, future)
+        layers = aggregate_edge_weights(sources, edges, num_states=dfa_model.num_states)
+        if length >= min_tokens: # length is allowed
+            result = torch.logaddexp(result, layers[dfa_model.initial_state])
+    return result
+
+
 class ConstraintLogitsProcessor(LogitsProcessor):
     """Reweights a base LLM's next-token distribution so that the completion satisfies a DFA.
 
@@ -236,7 +297,8 @@ class ConstraintLogitsProcessor(LogitsProcessor):
     """
     def __init__(self, hmm_model, dfa_model,
         min_new_tokens, max_new_tokens, prompt_ids, prefix_ids=[], suffix_ids=[],
-        temperature=1.0, alpha=1.0, token_ranges=None, hmm_batch_size=None):
+        temperature=1.0, alpha=1.0, token_ranges=None, hmm_batch_size=None,
+        terminal_log_probs=None):
         """Precompute everything that does not depend on the tokens sampled at run time.
 
         This is the expensive part: caches A (prefix forward pass), B (suffix backward
@@ -277,7 +339,10 @@ class ConstraintLogitsProcessor(LogitsProcessor):
         # cost of finishing with the suffix. Walked right to left; y is left holding row 0
         # (all zeros, meaning "no cost", when there is no suffix) for cache C below.
         B_cache = torch.empty(len(suffix_ids), hidden_states, device=device)
-        y = torch.zeros(hidden_states, device=device)
+        y = (torch.zeros(hidden_states, device=device) if terminal_log_probs is None
+             else terminal_log_probs.to(device).clone())
+        if y.shape != (hidden_states,):
+            raise ValueError("terminal_log_probs must have one weight per HMM state")
         for t in range(len(suffix_ids)-1, -1, -1):
             if t != len(suffix_ids) - 1:
                 y = matmul_a_logb(alpha_exp, y[:, None]).squeeze(-1)
@@ -437,7 +502,8 @@ class ConstraintLogitsProcessor(LogitsProcessor):
             # space) cancels the HMM's own estimate of P(prefix, next token), leaving just
             # log P(the constraint can still be satisfied | prefix, next token).
             hmm_logits, hmm_logits_ = self.compute_logits(selected_prefixes, selected_token_ranges, hmm_batch_size)
-            hmm_logits -= hmm_logits_
+            hmm_logits = torch.where(torch.isfinite(hmm_logits_),
+                                     hmm_logits - hmm_logits_, -1e30)
 
             # ban special tokens that are not in the HMM
             if hmm_logits.shape[1] < logits.shape[1]:

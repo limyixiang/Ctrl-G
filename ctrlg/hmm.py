@@ -81,6 +81,20 @@ class HMM(nn.Module, PyTorchModelHubMixin):
         self.beta.data = beta
         self.gamma.data = gamma
 
+    def conditional_loglikelihood(self, input_ids, prefix_lengths, batch_size=32):
+        """Sum log P(observed output | context), excluding context likelihood."""
+        device = self.alpha_exp.device
+        total = torch.zeros((), device=device)
+        for start in range(0, len(input_ids), batch_size):
+            batch = input_ids[start:start + batch_size].to(device)
+            lengths = torch.as_tensor(prefix_lengths[start:start + batch_size], device=device)
+            prefix = batch.clone()
+            prefix[torch.arange(batch.shape[1], device=device)[None, :] >= lengths[:, None]] = -2
+            full_ll = self.forward(batch)[-1]
+            prefix_ll = self.forward(prefix[:, :max(1, int(lengths.max()))])[-1]
+            total += (full_ll - prefix_ll).sum()
+        return total
+
 
     # bottom-up circuit pass
     def forward(self, input_ids):
@@ -105,10 +119,10 @@ class HMM(nn.Module, PyTorchModelHubMixin):
         # broadcasting (1, H, 1) state indices against (seq_len, 1, B) token indices
         input_probs = beta[
             torch.arange(0, hidden_states, device=device)[None, :, None],
-            input_ids_[:, None, :]].contiguous() # seq_len * hidden_states * batch_size
+            input_ids_.clamp_min(0)[:, None, :]].contiguous() # seq_len * hidden_states * batch_size
         # -1 indexes the last vocab entry above, so zero those out instead:
         # log-prob 0.0 == probability 1.0, i.e. the token is unobserved
-        input_probs *= (input_ids_ != -1)[:, None, :].expand(-1, hidden_states, -1) # 0.0 for MISSING token
+        input_probs = torch.where((input_ids_ >= 0)[:, None, :], input_probs, 0.0)
 
         ys = []
         y = torch.zeros((hidden_states, batch_size), device=device)
@@ -127,7 +141,7 @@ class HMM(nn.Module, PyTorchModelHubMixin):
         # finally marginalize the first hidden state against the initial distribution
         y_max = torch.amax(y, dim=0) # batch_size
         y = torch.exp(y - y_max.unsqueeze(0))
-        y = matmul(gamma_exp.unsqueeze(0), y).squeeze() # (1,H) @ (H,B) -> batch_size
+        y = matmul(gamma_exp.unsqueeze(0), y).squeeze(0) # preserve the batch dimension
         y = torch.log(y) + y_max
 
         ys.append(y) # ys[-1][b] = log P(x_0:) for example b
@@ -163,8 +177,8 @@ class HMM(nn.Module, PyTorchModelHubMixin):
         input_ids_ = torch.permute(input_ids, (1, 0)).contiguous() # seq_len * batch_size
         input_probs = beta[
             torch.arange(0, hidden_states, device=device)[None, :, None],
-            input_ids_[:, None, :]].contiguous() # seq_len * hidden_states * batch_size
-        input_probs *= (input_ids_ != -1)[:, None, :].expand(-1, hidden_states, -1)
+            input_ids_.clamp_min(0)[:, None, :]].contiguous() # seq_len * hidden_states * batch_size
+        input_probs = torch.where((input_ids_ >= 0)[:, None, :], input_probs, 0.0)
 
         flows = []
         # flow of the first hidden state:
@@ -172,6 +186,7 @@ class HMM(nn.Module, PyTorchModelHubMixin):
         # probs[-2] is the message at t=0, probs[-1] the sequence log-likelihood
         pf = gamma_exp.unsqueeze(0) * torch.exp(
             torch.permute(probs[-2], (1, 0)).contiguous() - probs[-1][:, None]) # batch_size * hidden_states
+        pf = pf * (input_ids_[:1].T != -2)
         flows.append(pf)
 
         # update gamma_flow
@@ -189,7 +204,8 @@ class HMM(nn.Module, PyTorchModelHubMixin):
             # transition flow P(z_t=i, z_{t+1}=j | x), summed over the batch:
             #   P(z_t=i | x) * alpha_exp[i,j] * P(x_{t+1}: | z_{t+1}=j) / P(x_{t+1}: | z_t=i)
             # the alpha_exp[i,j] factor is applied by the caller after all batches
-            alpha_flow.add_(ib_ib_bj_to_ij(torch.permute(pf, (1, 0)).contiguous(),
+            active = (input_ids_[t + 1] != -2)[:, None]
+            alpha_flow.add_(ib_ib_bj_to_ij(torch.permute(pf * active, (1, 0)).contiguous(),
                 pp,
                 torch.permute(cp, (1, 0)).contiguous()))
 
@@ -202,7 +218,7 @@ class HMM(nn.Module, PyTorchModelHubMixin):
 
             ratio = pf / pp_
             ratio[pp_ == 0.0] = 0.0 # zero-probability parents carry no flow; avoids 0/0
-            pf = matmul(ratio, alpha_exp) * torch.exp(cp - pp_max)
+            pf = matmul(ratio, alpha_exp) * torch.exp(cp - pp_max) * active
 
             flows.append(pf)
 
@@ -210,7 +226,8 @@ class HMM(nn.Module, PyTorchModelHubMixin):
         # token it emitted, so beta_flow[w, i] ends up as the expected count of state i
         # emitting token w
         flows = torch.stack(flows, dim=0) # seq_len * batch_size * hidden_states
-        input_ids_[input_ids_ == -1] = vocab_size # route MISSING tokens to the spare row
+        input_ids_ = input_ids_.clone()
+        input_ids_[input_ids_ < 0] = vocab_size # padding has zero flow; -1 collects missing evidence
         input_ids_ = input_ids_[:, :, None].expand(-1, -1, hidden_states).view(seq_len * batch_size, hidden_states)
         beta_flow.scatter_add_(0, input_ids_, flows.view(seq_len * batch_size, hidden_states))
 

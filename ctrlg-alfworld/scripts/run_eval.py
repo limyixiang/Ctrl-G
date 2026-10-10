@@ -15,6 +15,7 @@ from ctrlg_alfworld import SkillSet, run_episode
 from ctrlg_alfworld.backends import GenConfig, HFBackend
 from ctrlg_alfworld.experiment import condition_choices, get_condition
 from ctrlg_alfworld.prompts import PROMPT_FORMAT
+from ctrlg_alfworld.hmm_context import HMM_CONTEXT_FORMAT, HMM_SEQUENCE_FORMAT
 from ctrlg_alfworld.provenance import (
     artifact_sha256,
     file_sha256,
@@ -43,9 +44,9 @@ def resolve_hmm_path(
 
 
 def validate_hmm_provenance(
-    hmm_path: str | None, *, skillset: SkillSet, model: str
+    hmm_path: str | None, *, skillset: SkillSet, model: str, hmm_context_steps=1, max_hmm_context_tokens=1024
 ) -> tuple[str | None, dict | None]:
-    """Require constrained-state, no-oracle action-HMM provenance."""
+    """Require unmasked, observable-context joint-HMM provenance."""
 
     if hmm_path is None:
         return None, None
@@ -65,7 +66,12 @@ def validate_hmm_provenance(
         "schema_version": skillset.schema_version,
         "policy_version": skillset.policy_version,
         "no_oracle_filtering": True,
-        "constrained_state_collection": True,
+        "constrained_state_collection": False,
+        "hmm_sequence_format": HMM_SEQUENCE_FORMAT,
+        "hmm_context_format": HMM_CONTEXT_FORMAT,
+        "hmm_context_steps": hmm_context_steps,
+        "max_hmm_context_tokens": max_hmm_context_tokens,
+        "selection_policy": "all_observed_attempts",
         "model": model,
         "tokenizer": model,
         "prompt_format": PROMPT_FORMAT,
@@ -96,7 +102,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--beam_size", type=int, default=1,
-        help="Ctrl-G beam width and action candidates (default: 1)",
+        help="Matched action beam width in both arms (default: 1)",
     )
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
     parser.add_argument("--max_state_tokens", type=int, default=512)
@@ -105,6 +111,8 @@ def main():
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--rollout_temperature", type=float, default=0.7)
     parser.add_argument("--max_hmm_prefix_tokens", type=int, default=None)
+    parser.add_argument("--hmm_context_steps", type=int, default=1)
+    parser.add_argument("--max_hmm_context_tokens", type=int, default=1024)
     parser.add_argument("--sample_actions", action="store_true")
     parser.add_argument("--sample_head", action="store_true")
     parser.add_argument("--device", default="cuda")
@@ -126,7 +134,8 @@ def main():
         )
         hmm_training_metadata, hmm_provenance = (
             validate_hmm_provenance(
-                hmm_path, skillset=skillset, model=args.model
+                hmm_path, skillset=skillset, model=args.model,
+                hmm_context_steps=args.hmm_context_steps, max_hmm_context_tokens=args.max_hmm_context_tokens
             )
         )
     except ValueError as exc:
@@ -161,6 +170,7 @@ def main():
         rollout_temperature=args.rollout_temperature,
         seed=args.seed,
         max_hmm_prefix_tokens=args.max_hmm_prefix_tokens,
+        hmm_context_steps=args.hmm_context_steps, max_hmm_context_tokens=args.max_hmm_context_tokens,
     )
     backend = HFBackend(
         args.model,
@@ -179,6 +189,10 @@ def main():
     rule_activations = Counter()
     rule_violations = Counter()
     episode_gamefiles = []
+    state_hmm_steps = 0
+    context_truncated_steps = 0
+    state_hmm_skips = Counter()
+    action_hmm_skips = Counter()
     totals = {
         "episodes": 0,
         "successes": 0,
@@ -233,6 +247,12 @@ def main():
             per_type[record.task_key][0] += int(record.success)
             per_type[record.task_key][1] += 1
             for step in record.steps:
+                state_hmm_steps += int(step.state_hmm_applied)
+                context_truncated_steps += int(step.hmm_context_truncated)
+                if step.state_hmm_skip_reason:
+                    state_hmm_skips[step.state_hmm_skip_reason] += 1
+                if step.hmm_skip_reason:
+                    action_hmm_skips[step.hmm_skip_reason] += 1
                 totals["actions"] += 1
                 totals["admissible_actions"] += int(step.action_was_admissible)
                 totals["parsed_turns"] += int(step.parse_ok)
@@ -292,6 +312,11 @@ def main():
         "prompt_format": PROMPT_FORMAT,
         "hmm": hmm_path,
         "hmm_sha256": artifact_sha256(hmm_path) if hmm_path else None,
+        "state_hmm_applied_steps": state_hmm_steps,
+        "state_hmm_skip_reasons": dict(state_hmm_skips),
+        "action_hmm_skip_reasons": dict(action_hmm_skips),
+        "hmm_context_truncated_steps": context_truncated_steps,
+        "hmm_scope": "state_and_action" if condition.use_hmm else "none",
         "hmm_training_metadata": hmm_training_metadata,
         "hmm_training_metadata_sha256": (
             file_sha256(hmm_training_metadata) if hmm_training_metadata else None
@@ -308,6 +333,10 @@ def main():
         "temperature": args.temperature,
         "rollout_temperature": args.rollout_temperature,
         "max_hmm_prefix_tokens": args.max_hmm_prefix_tokens,
+        "hmm_sequence_format": HMM_SEQUENCE_FORMAT,
+        "hmm_context_format": HMM_CONTEXT_FORMAT,
+        "hmm_context_steps": args.hmm_context_steps,
+        "max_hmm_context_tokens": args.max_hmm_context_tokens,
         "num_episodes": args.num_episodes,
         "sample_actions": args.sample_actions,
         "sample_head": args.sample_head,
@@ -334,6 +363,8 @@ def main():
             "policy_evaluability_rate": totals["policy_evaluable_turns"] / action_count,
             "policy_adherence_rate": totals["policy_satisfied_turns"] / max(totals["policy_evaluable_turns"], 1),
             "policy_fallback_rate": totals["policy_fallback_turns"] / action_count,
+            "state_hmm_applied_rate": state_hmm_steps / action_count,
+            "hmm_context_truncation_rate": context_truncated_steps / action_count,
             "hmm_applied_rate": totals["hmm_applied_turns"] / action_count,
             "head_truncation_rate": totals["head_truncated_turns"] / action_count,
             "thought_truncation_rate": (

@@ -13,7 +13,7 @@
 #SBATCH --mail-user=e1121685@u.nus.edu
 
 # Example:
-# MODEL=Qwen/Qwen3.5-9B OVERWRITE=1 EPISODES=3 OUTPUT=results/alfworld/9b_policy_hmm sbatch -p gpu -t 03:00:00 ctrlg-alfworld/slurm/collect_hmm_samples.sh
+# MODEL=Qwen/Qwen3.5-9B OVERWRITE=1 EPISODES=3 OUTPUT=results/alfworld/9b_context_rollout_v1 sbatch -p gpu -t 03:00:00 ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
 set -euo pipefail
 
@@ -31,8 +31,7 @@ MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 SERVED_NAME=${SERVED_NAME:-$MODEL}
 EPISODES=${EPISODES:-3553}
 TEMPERATURE=${TEMPERATURE:-0.7}
-STATE_MAX_ATTEMPTS=${STATE_MAX_ATTEMPTS:-5}
-STATE_RETRY_TEMPERATURE=${STATE_RETRY_TEMPERATURE:-0.2}
+COLLECTION_MAX_ATTEMPTS=${COLLECTION_MAX_ATTEMPTS:-5}
 if [[ "${RESUME:-0}" == "1" && -z "${OUTPUT:-}" ]]; then
   echo "RESUME=1 requires OUTPUT to name the existing collection directory" >&2
   exit 2
@@ -88,9 +87,7 @@ python ctrlg-alfworld/scripts/run_rollouts.py \
   --base_url "http://127.0.0.1:$PORT/v1" \
   --num_episodes "$EPISODES" \
   --temperature "$TEMPERATURE" \
-  --state_max_attempts "$STATE_MAX_ATTEMPTS" \
-  --state_retry_temperature "$STATE_RETRY_TEMPERATURE" \
-  --max_hmm_sequence_tokens 640 \
+  --collection_max_attempts "$COLLECTION_MAX_ATTEMPTS" \
   --max_thought_tokens 1024 \
   --max_state_tokens 512 \
   --max_action_tokens 32 \

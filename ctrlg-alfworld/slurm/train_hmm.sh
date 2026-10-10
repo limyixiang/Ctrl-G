@@ -21,7 +21,7 @@ source .venv-alfworld/bin/activate
 
 MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 DATA_DIR=${DATA_DIR:?Set DATA_DIR to the build_hmm_data.py output directory}
-OUTPUT=${OUTPUT:-results/alfworld/hmm_model_9b}
+OUTPUT=${OUTPUT:-results/alfworld/hmm_context_model_9b_v1}
 HIDDEN_STATES=${HIDDEN_STATES:-4096}
 TRAIN_CHUNKS=${TRAIN_CHUNKS:-8}
 EM_SCHEDULE=${EM_SCHEDULE:-'8,1;4,2;2,4;11,8'}
@@ -101,7 +101,7 @@ if [[ ! -d "$OUTPUT/checkpoint-$EVAL_CHECKPOINT" ]]; then
   exit 1
 fi
 echo "scheduled final checkpoint: $SCHEDULED_FINAL_CHECKPOINT"
-echo "best saved checkpoint by dev log-likelihood: $BEST_CHECKPOINT"
+echo "best saved checkpoint by output-conditional dev log-likelihood: $BEST_CHECKPOINT"
 echo "evaluating checkpoint: $EVAL_CHECKPOINT"
 python ctrlg-alfworld/scripts/evaluate_hmm_fit.py \
   --hmm "$OUTPUT/checkpoint-$EVAL_CHECKPOINT" \
@@ -110,5 +110,5 @@ python ctrlg-alfworld/scripts/evaluate_hmm_fit.py \
   --batch-size "$BATCH_SIZE" \
   --out "$OUTPUT/held_out_fit.json"
 
-# DATA_DIR=results/alfworld/hmm_data_9b MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_model_9b RESUME_CHECKPOINT=32 EM_SCHEDULE='10,8' sbatch ctrlg-alfworld/slurm/train_hmm.sh
-# DATA_DIR=results/alfworld/hmm_data_4b MODEL=Qwen/Qwen3.5-4B OUTPUT=results/alfworld/hmm_model_4b sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_context_data_9b_k1_b1024_v1 MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_context_model_9b_v1 RESUME_CHECKPOINT=32 EM_SCHEDULE='10,8' sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_context_data_4b_k1_b1024_v1 MODEL=Qwen/Qwen3.5-4B OUTPUT=results/alfworld/hmm_context_model_4b_v1 sbatch ctrlg-alfworld/slurm/train_hmm.sh

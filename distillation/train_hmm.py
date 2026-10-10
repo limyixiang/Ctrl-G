@@ -1,6 +1,7 @@
 import os
 import argparse
 import random
+import json
 
 import torch
 import torch.nn as nn
@@ -12,8 +13,8 @@ from ctrlg import HMM
 
 def apply_dropout(input_ids, dropout, vocab_size, eos_token_id):
     n, d = input_ids.shape
-    input_ids[torch.rand(n, device=input_ids.device) < dropout, -1] = eos_token_id
-    input_ids[torch.logical_and(torch.rand(n, d, device=input_ids.device) < dropout, input_ids != eos_token_id)] = -1
+    observed = (input_ids >= 0) & (input_ids != eos_token_id)
+    input_ids[(torch.rand(n, d, device=input_ids.device) < dropout) & observed] = -1
     return input_ids
 
 
@@ -28,10 +29,24 @@ def train_hmm(rank, world_size,
     hidden_states, vocab_size, eos_token_id = hmm_model.hidden_states, hmm_model.vocab_size, hmm_model.eos_token_id
     eps_cuda = torch.tensor([1e-7], device=device)
 
-    dev_data = torch.load(f'{args.data_path}/{dataset}.dev')[:, :sample_length]
+    dev_data = torch.load(f'{data_path}/{dataset}.dev')[:, :sample_length]
     dev_size = dev_data.shape[0]
     num_per_process = dev_data.shape[0] // world_size + 1
-    dev_data = dev_data[rank * num_per_process: min(dev_data.shape[0], (rank+1) * num_per_process)]
+    dev_start, dev_end = rank * num_per_process, min(dev_data.shape[0], (rank+1) * num_per_process)
+    dev_data = dev_data[dev_start:dev_end]
+    span_path = f'{data_path}/{dataset}.dev.spans.json'
+    context_lengths = None
+    if os.path.isfile(span_path):
+        with open(span_path) as source:
+            spans = json.load(source)
+        if len(spans) != dev_size:
+            raise ValueError("held-out spans do not match dev tensor")
+        context_lengths = [span["context_length"] for span in spans[dev_start:dev_end]]
+        if sample_length is not None:
+            raise ValueError("sample_length would censor versioned training data; use its observed lengths")
+    def dev_score():
+        return (hmm_model.conditional_loglikelihood(dev_data, context_lengths, batch_size)
+                if context_lengths is not None else hmm_model.loglikelihood(dev_data, batch_size))
 
     for _, step_size in em_schedule:
         assert step_size <= total_chunks
@@ -41,7 +56,7 @@ def train_hmm(rank, world_size,
         for step_idx in range(0, step_count):
             # evaluate ll
             if step_offset == checkpoint:
-                dev_ll = hmm_model.loglikelihood(dev_data, batch_size)
+                dev_ll = dev_score()
                 torch.distributed.all_reduce(dev_ll, op=dist.ReduceOp.SUM)
                 if rank == 0:
                     dev_ll = dev_ll.item() / dev_size
@@ -58,6 +73,8 @@ def train_hmm(rank, world_size,
             num_per_process = train_step.shape[0] // world_size + 1
             train_data = train_step[rank * num_per_process: min(train_step.shape[0], (rank+1) * num_per_process)]
             train_data_eval = train_data[:dev_data.shape[0]].clone()
+            train_eval_count = torch.tensor(float(len(train_data_eval)), device=device)
+            torch.distributed.all_reduce(train_eval_count, op=dist.ReduceOp.SUM)
             train_data = apply_dropout(train_data, dropout, vocab_size, eos_token_id)
 
             # compute flows for one em step
@@ -100,13 +117,13 @@ def train_hmm(rank, world_size,
 
                 # evaluate ll
                 train_ll = hmm_model.loglikelihood(train_data_eval, batch_size)
-                dev_ll = hmm_model.loglikelihood(dev_data, batch_size)
+                dev_ll = dev_score()
 
             torch.distributed.all_reduce(train_ll, op=dist.ReduceOp.SUM)
             torch.distributed.all_reduce(dev_ll, op=dist.ReduceOp.SUM)
 
             if rank == 0:
-                train_ll = train_ll.item() / dev_size
+                train_ll = train_ll.item() / max(float(train_eval_count), 1)
                 dev_ll = dev_ll.item() / dev_size
                 ckpt = step_offset + step_size
                 msg = f'{ckpt}\t{train_ll}\t{dev_ll}'
@@ -157,6 +174,8 @@ if __name__ == '__main__':
     if rank == 0:
         with open(args.log_file, 'a+') as fout:
             fout.write(str(vars(args)) + '\n')
+            if os.path.isfile(f'{args.data_path}/{args.dataset}.dev.spans.json'):
+                fout.write('# dev_score=mean_output_conditional_log_likelihood_per_attempt\n')
 
     em_schedule = [tuple([int(y) for y in x.split(',')]) for x in args.em_schedule.split(';') if x != '']
 

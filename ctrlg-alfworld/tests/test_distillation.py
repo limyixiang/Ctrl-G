@@ -294,6 +294,9 @@ class DistillationDataTests(unittest.TestCase):
 
     def test_collection_regime_must_be_uniform(self):
         records = [make_record(True, 11), make_record(True, 12)]
+        for record in records:
+            record.update(constrained_state_collection=False,
+                rollout_sample_format="unmasked_state_action_attempt_v1", collection_max_attempts=5)
         self.assertTrue(validate_prompt_regime(records)["no_oracle_filtering"])
         records[1]["policy_version"] = 2
         with self.assertRaisesRegex(ValueError, "policy_version"):
@@ -302,7 +305,7 @@ class DistillationDataTests(unittest.TestCase):
     def test_legacy_prompt_format_is_rejected_even_with_state_keys(self):
         record = make_record(True, 11)
         record["prompt_format"] = "decision_with_persistent_history_no_oracle_v1"
-        with self.assertRaisesRegex(ValueError, "prompt_format"):
+        with self.assertRaisesRegex(ValueError, "prompt_format|hmm_sequence_format"):
             validate_prompt_regime([record])
 
     def test_legacy_record_keys_are_rejected(self):

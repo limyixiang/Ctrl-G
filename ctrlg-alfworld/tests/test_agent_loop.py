@@ -28,10 +28,12 @@ class FakeBackend:
         self.tokenizer = CharacterTokenizer()
         self.calls = []
         self.prompt_texts = []
+        self.contexts = []
 
-    def generate_turn(self, prompt_text, skillset, task_key, *, constrained, greedy_head):
+    def generate_turn(self, prompt_text, skillset, task_key, *, constrained, greedy_head, hmm_context):
         self.calls.append((task_key, constrained, skillset.content_sha256))
         self.prompt_texts.append(prompt_text)
+        self.contexts.append(hmm_context)
         head = f"choose</think><state>{STATE}</state><action>"
         tail = "look</action>"
         parsed = parse_turn(head, tail, use_state=True)

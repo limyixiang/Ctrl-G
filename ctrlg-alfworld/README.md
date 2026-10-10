@@ -1,17 +1,24 @@
 # Ctrl-G on ALFWorld
 
-This package evaluates one matched pair using the same model prompt, complete
-trajectory, and byte-identical `templates/SKILLS.md`:
+This package evaluates one matched pair using the same prompt construction,
+complete action/observation history, and byte-identical `templates/SKILLS.md`:
 
 | Condition | State | Action |
 |---|---|---|
 | `state_prompt` | unconstrained | unconstrained |
-| `state_ctrlg` | hard schema DFA | policy DFA + action HMM |
+| `state_ctrlg` | schema DFA + joint HMM | policy DFA + same joint HMM |
 
 `info["admissible_commands"]` is never passed to either decoder and is never
 shown in the prompt. It is retained only as `admissible_gt` after generation,
 to score `action_was_admissible`. There is no symbolic state tracker and no
 fact extraction from observations or prompt text.
+
+The LLM prompt includes the task description, skill document, initial
+observation, all previous executed actions and their resulting observations,
+and the current observation. Previous generated state blocks and native
+thinking are logged but are not replayed in the prompt. Each turn's state is
+generated from the action/observation history. Both conditions use the same
+history format and receive identical prompt content for an identical trajectory.
 
 ## Skill contract
 
@@ -59,56 +66,126 @@ never falls back to environment admissible commands.
 Strict generation has five phases:
 
 1. Native thought generation.
-2. State body plus `</state>` under a hard tokenizer DFA.
+2. State body plus `</state>` under the schema DFA and context-conditioned HMM, including a bounded generic action continuation in its lookahead.
 3. Guaranteed-valid YAML parsing.
 4. Per-turn policy-language compilation from declared fields.
-5. Action body plus `</action>` under the policy DFA and action HMM.
+5. Action body plus `</action>` under the policy DFA and the same HMM, followed by EOS.
 
-The default state/action caps are 512/32 tokens. Both closing tags are
+The default state/action caps are 512/32 tokens. Head sampling and action
+sampling are independent controls with the same temperatures and beam
+settings across arms. Reported generated tokens exclude controller-inserted
+phase delimiters and count the treatment's sampled terminal EOS. State/action
+latencies include DFA compilation and HMM lookahead setup. Both closing tags are
 inside their DFA spans; the action HMM has EOS as its fixed suffix. The hard
 logits processor tracks DFA state and masks paths that cannot reach acceptance
 within the remaining budget.
 
 ## HMM data collection
 
-Training samples use a hard-DFA state followed by an unconstrained sampled
-action. Both the in-process HF backend and vLLM 0.12.0 or newer are supported;
-vLLM receives the state language through `structured_outputs.regex`.
+Collection uses natural, unmasked state and action draws in both HF and vLLM.
+Native thinking is greedy; states/actions use the collection temperature (0.7
+by default). Every attempt is saved, including invalid YAML, grammar failures,
+inadmissible actions, unsuccessful episodes and truncated outputs.
 
-```bash
-python ctrlg-alfworld/scripts/run_rollouts.py \
-  --backend vllm \
-  --model Qwen/Qwen3.5-9B \
-  --tokenizer Qwen/Qwen3.5-9B \
-  --num_episodes 100 \
-  --max_state_tokens 512 \
-  --state_max_attempts 5 \
-  --state_retry_temperature 0.2 \
-  --max_action_tokens 32 \
-  --max_hmm_sequence_tokens 640 \
-  --out results/alfworld/9b_policy_hmm
+At a step, collection makes at most `--collection_max_attempts` independent
+whole-turn draws (default 5) from the same prompt and environment state. It
+executes the first complete, parseable state plus syntactically valid action.
+The schema and action grammar are public; environment admissibility and actual
+progress never determine selection. If that action fails in the environment,
+its feedback enters history. If no attempt is executable, the episode ends
+and all its observed attempts remain available for training. Evaluation uses
+one turn per step in both arms, without collection retries.
+
+Collection saves exact observed targets in `samples.jsonl` and full observable
+episode history in `history.jsonl`. It does not choose an HMM history window or
+context token budget. Keep both files to reuse the rollouts for multiple builds.
+
+At dataset-build time, each attempt becomes a separate HMM example with the
+same step context:
+
+```text
+C_t <state>STATE</state><action>ACTION</action> EOS
 ```
 
-Every structurally valid, token-exact sample is eligible regardless of action
-admissibility. Dataset/checkpoint metadata records the skill hash, schema and
-policy versions, model/tokenizer, hard-state collection regime, and
-no-oracle filtering flag.
+`C_t` is compact deterministic JSON containing the task, initial observation,
+the last `--hmm_context_steps` executed action/observation turns (default 1),
+and the current observation. Current feedback is deduplicated against the last
+turn. It contains no old state summaries, native thinking, oracle commands or
+rejected attempts. Its budget is `--max_hmm_context_tokens` (default 1024):
+oldest complete turns are dropped first, then the initial observation is
+shortened. These options belong to `build_hmm_data.py`, exposed by
+`HMM_CONTEXT_STEPS` and `MAX_HMM_CONTEXT_TOKENS` in `slurm/build_hmm_data.sh`.
+The builder joins each attempt to its earlier executed turns from `--history`
+(default: `history.jsonl` beside `--samples`), never to later feedback or
+rejected attempts. Dataset building and evaluation must use the same settings.
+A budget too small for the task/current observation is rejected.
 
-vLLM state collection makes one greedy structured-output attempt, then up
-to four deterministic low-temperature attempts with distinct seeds. If all
-five attempts fail to complete the schema, the terminal sample is recorded as
-non-distillable and that episode ends; valid samples from its earlier steps are
-retained. `metadata.json` reports state retry, recovery, and exhausted-
-episode rates for the model run.
+Build metadata reports used context token mean, median, p95, p99, maximum,
+mean budget utilization and truncation rate, counting each step once. Span
+files also record retained history-turn counts and truncation flags. Evaluation
+logs retained token counts and truncation per step. Original token counts
+before truncation are not recorded.
 
-Prepare Ctrl-G data with:
+This serialization is **HMM input only**. Both LLM arms keep the same full
+prompt described above. At state inference the HMM consumes `C_t + <state>`;
+at action inference it consumes `C_t + generated state + <action>`. No extra
+context text is added to either LLM prompt. State generation stops at its
+closing tag, while the HMM looks ahead through a generic action and EOS.
+The declared state then determines the actual policy action DFA.
+
+Truncated examples contain only their observed target prefix. They receive
+no invented closers or EOS; an actual model EOS is retained even if the
+protocol is incomplete. Only a completed action protocol gets an appended
+EOS. `-2` is right padding with no evidence or EM counts, distinct from `-1`
+token dropout. Attempts with no sampled state/action tokens are saved but
+have no HMM training target. Training gives each observed attempt one sequence
+likelihood term, so steps requiring more retries contribute more examples.
+Retries and all steps from the same game instance stay in one train/dev split.
+
+LVD extracts context embeddings from the explicit serialization and target
+embeddings from the original LLM prompt/thinking. The deployed HMM conditions
+on explicit tokens, never on the teacher's hidden states. The default HMM size
+remains 4096; longer context does not automatically require more hidden states.
+Compare capacity or context-window changes using held-out output-conditional
+state/action NLL and paired task success. Checkpoint selection uses mean
+`log P(observed target | C_t)` per attempt; joint sequence likelihood is also
+reported as a diagnostic.
+
+Start fresh data and checkpoint directories:
 
 ```bash
-python ctrlg-alfworld/scripts/build_hmm_data.py \
-  --samples results/alfworld/9b_policy_hmm/samples.jsonl \
-  --tokenizer Qwen/Qwen3.5-9B \
-  --output_dir distillation/alfworld
+MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/9b_context_rollout_v1 \
+  sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
+
+MODEL=Qwen/Qwen3.5-9B SAMPLES=results/alfworld/9b_context_rollout_v1/samples.jsonl \
+  HMM_CONTEXT_STEPS=1 MAX_HMM_CONTEXT_TOKENS=1024 \
+  OUTPUT=results/alfworld/hmm_context_data_9b_k1_b1024_v1 \
+  sbatch ctrlg-alfworld/slurm/build_hmm_data.sh
+
+# Reuse the same raw rollouts with a different history window.
+MODEL=Qwen/Qwen3.5-9B SAMPLES=results/alfworld/9b_context_rollout_v1/samples.jsonl \
+  HMM_CONTEXT_STEPS=3 MAX_HMM_CONTEXT_TOKENS=1024 \
+  OUTPUT=results/alfworld/hmm_context_data_9b_k3_b1024_v1 \
+  sbatch ctrlg-alfworld/slurm/build_hmm_data.sh
+
+MODEL=Qwen/Qwen3.5-9B DATA_DIR=results/alfworld/hmm_context_data_9b_k1_b1024_v1 \
+  OUTPUT=results/alfworld/hmm_context_model_9b_v1 \
+  sbatch ctrlg-alfworld/slurm/train_hmm.sh
 ```
+
+Submit each stage after the prior stage completes, or use a Slurm
+`--dependency=afterok:JOB_ID`. The build stage keeps all observed attempts and
+writes explicit lengths/completion flags and phase boundaries alongside
+train/dev/LVD tensors. LVD embedding storage is preallocated and bounded by
+`--lvd_embedding_budget_gib` (default 32 GiB); the effective initialization
+subset size is recorded. All attempts remain in the EM dataset. The training
+job copies data provenance to checkpoints.
+Each build uses the same game split for a fixed seed and keeps observed target
+tokens unchanged. Context tensors and LVD embeddings are rebuilt for the chosen
+window. Older unmasked `context_state_action_censored_v1` collections can also
+be rebuilt when their original `history.jsonl` is available; their saved context
+is replaced. Old masked or incompatible samples/checkpoints are rejected;
+editing metadata cannot convert their token sequences.
 
 ## Evaluation
 
@@ -123,7 +200,7 @@ python ctrlg-alfworld/scripts/run_eval.py \
 python ctrlg-alfworld/scripts/run_eval.py \
   --model Qwen/Qwen3.5-9B \
   --condition state_ctrlg \
-  --hmm distillation/alfworld/checkpoint \
+  --hmm results/alfworld/hmm_context_model_9b_v1/checkpoint-112 \
   --out results/alfworld/pair
 
 python ctrlg-alfworld/scripts/summarize_results.py \
@@ -134,40 +211,26 @@ The paired summary reports Ctrl-G minus prompt-only deltas for success,
 post-hoc admissibility, state-schema validity, action-grammar validity,
 policy adherence/fallback, latency, and tokens. Step records include parsed
 state fields, activated/shadowed rules, evaluability/satisfaction, HMM
-application/skip reason, and post-hoc admissibility. Summaries reject mismatched
+application/skip reason separately for state and action, context token count/shortening, and post-hoc admissibility. Summaries reject mismatched
 model, prompt settings, skills, episode manifest, policy version, or HMM
 provenance.
 
-## Migration from decision blocks
+## Format and migration
 
-This is a breaking rename: model output now uses `<state>...</state>`,
-skill schemas use `state-schema`, and Python APIs and saved-data keys use
-`state` in place of `decision`. The YAML body, field order, policies, and token
-budgets retain their existing behavior. The inner `state` field in clean,
-heat, and cool tasks still describes the object's transformation status.
+The LLM prompt identifier remains `state_with_persistent_history_no_oracle_v1`:
+`persistent_history` means executed action/observation history, with no replay
+of generated states or native thinking. The independent HMM identifiers are
+`context_state_action_censored_v1` and `observable_trajectory_json_v1`.
 
-Update launch commands and external consumers using these names:
-
-| Previous name | Current name |
-|---|---|
-| `decision_prompt`, `decision_ctrlg` | `state_prompt`, `state_ctrlg` |
-| `--max_decision_tokens` | `--max_state_tokens` |
-| `--decision_max_attempts` | `--state_max_attempts` |
-| `--decision_retry_temperature` | `--state_retry_temperature` |
-| `DECISION_MAX_ATTEMPTS`, `DECISION_RETRY_TEMPERATURE` | `STATE_MAX_ATTEMPTS`, `STATE_RETRY_TEMPERATURE` |
-| `decision`, `model_decision`, `selected_model_decision` | `state`, `model_state`, `selected_model_state` |
-| `decision_fields`, `decision_schema_valid` | `state_fields`, `state_schema_valid` |
-
-New artifacts identify their prompt format as
-`state_with_persistent_history_no_oracle_v1`. Use a new collection output
-directory, recollect samples, and retrain the action HMM before evaluating
-`state_ctrlg`. Decision-format runs cannot be resumed with this code, and
-their HMM checkpoints are rejected. Renaming metadata cannot convert the
-old token sequences to the new tags.
-
-`scripts/submit_all.sh` starts fresh collections in `9b_state_rollout` and
-`4b_state_rollout` under `results/alfworld/`. Set `RESUME=1` only when continuing
-an existing state-format collection in those directories.
+`scripts/submit_all.sh` starts fresh collections in `9b_context_rollout_v1`
+and `4b_context_rollout_v1`. New raw samples use
+`unmasked_state_action_attempt_v1`. Resume checks enforce the raw serialization,
+sampling policy and retry budget; HMM context settings are independent of
+collection. Collections from older serialization versions cannot be resumed
+under the new raw collector, but the unmasked context-format records above can
+be reused for dataset building.
+`--state_max_attempts` and `--state_retry_temperature` are replaced by
+`--collection_max_attempts`, which bounds whole unmasked turn attempts.
 
 ## Tests
 
@@ -175,8 +238,16 @@ an existing state-format collection in those directories.
 pytest -q ctrlg-alfworld/tests
 ```
 
+For Windows CPU-only environments, set `TORCHDYNAMO_DISABLE=1` to test the
+math without a native compiler. Set `CTRLG_RUN_QWEN_SMOKE=1` to enable the
+optional local tokenizer check. `scripts/profile_joint_hmm.py` profiles real
+tokenizer DFAs with an untrained small HMM; it does not measure task quality.
+At the default token budgets, the local Qwen tokenizer profile estimates
+about 12.3 GB for the state lookahead cache at 4096 hidden states, excluding
+model weights and temporary buffers.
+
 The CPU suite covers DSL rejection, all six schemas, exact two-target
 `puttwo` states including shared locations, character/token DFA behavior,
 closing tags, token-budget completion, policy priority and fallback, cup/mug
 separation, prompt identity, no-oracle decoder routing, collection eligibility,
-vLLM guided regex, and paired-summary provenance.
+unmasked HF/vLLM draws, durable retry collection/resume, censored-prefix EM counts, context/teacher embedding alignment, exact state/action lookahead probabilities, and paired-summary provenance.
