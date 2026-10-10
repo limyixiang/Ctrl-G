@@ -12,9 +12,6 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=e1121685@u.nus.edu
 
-# to run a pilot test:
-# MAcdmples.sh
-
 # Example:
 # MODEL=Qwen/Qwen3.5-9B OVERWRITE=1 EPISODES=3 OUTPUT=results/alfworld/9b_policy_hmm sbatch -p gpu -t 03:00:00 ctrlg-alfworld/slurm/collect_hmm_samples.sh
 

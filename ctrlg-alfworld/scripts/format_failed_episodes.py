@@ -1,4 +1,6 @@
-"""Render failed evaluation episodes as a readable Markdown report."""
+"""Render failed evaluation episodes as a readable Markdown report.
+python ctrlg-alfworld/scripts/format_failed_episodes.py "results/alfworld/pair_9b/eval_decision_ctrlg.jsonl" --full --out results/alfworld/pair_9b/failed_episodes_ctrlg_full.md
+"""
 
 import argparse
 import json

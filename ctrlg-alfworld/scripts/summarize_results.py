@@ -1,4 +1,7 @@
-"""Validate and summarize prompt-only versus policy-constrained Ctrl-G."""
+"""Validate and summarize prompt-only versus policy-constrained Ctrl-G.
+
+python ctrlg-alfworld/scripts/summarize_results.py --results results/alfworld/pair_4b --out results/alfworld/pair_4b/paired_summary.json
+"""
 
 import argparse
 import json

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -J alfworld-hmm
-#SBATCH -p gpu
-#SBATCH -t 3:00:00
+#SBATCH -p gpu-long
+#SBATCH -t 12:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -24,7 +24,7 @@ DATA_DIR=${DATA_DIR:?Set DATA_DIR to the build_hmm_data.py output directory}
 OUTPUT=${OUTPUT:-results/alfworld/hmm_model_9b}
 HIDDEN_STATES=${HIDDEN_STATES:-4096}
 TRAIN_CHUNKS=${TRAIN_CHUNKS:-8}
-EM_SCHEDULE=${EM_SCHEDULE:-'8,1;4,2;2,4;1,8'}
+EM_SCHEDULE=${EM_SCHEDULE:-'8,1;4,2;2,4;11,8'}
 RESUME_CHECKPOINT=${RESUME_CHECKPOINT:-0}
 BATCH_SIZE=${BATCH_SIZE:-32}
 SEED=${SEED:-42}
@@ -110,4 +110,5 @@ python ctrlg-alfworld/scripts/evaluate_hmm_fit.py \
   --batch-size "$BATCH_SIZE" \
   --out "$OUTPUT/held_out_fit.json"
 
-# DATA_DIR=results/alfworld/hmm_data_9b MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_model_9b sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_data_9b MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_model_9b RESUME_CHECKPOINT=32 EM_SCHEDULE='10,8' sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_data_4b MODEL=Qwen/Qwen3.5-4B OUTPUT=results/alfworld/hmm_model_4b sbatch ctrlg-alfworld/slurm/train_hmm.sh
