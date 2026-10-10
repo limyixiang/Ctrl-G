@@ -1,5 +1,5 @@
 """Render failed evaluation episodes as a readable Markdown report.
-python ctrlg-alfworld/scripts/format_failed_episodes.py "results/alfworld/pair_9b/eval_decision_ctrlg.jsonl" --full --out results/alfworld/pair_9b/failed_episodes_ctrlg_full.md
+python ctrlg-alfworld/scripts/format_failed_episodes.py "results/alfworld/pair_9b/eval_state_ctrlg.jsonl" --full --out results/alfworld/pair_9b/failed_episodes_ctrlg_full.md
 """
 
 import argparse
@@ -121,7 +121,7 @@ def render(total: int, failures: list[tuple[int, dict]], full: bool) -> str:
             action = str(step.get("action", "<missing action>")).replace("\n", " ")
             admissible = step.get("action_was_admissible")
             marker = " **INADMISSIBLE**" if admissible is False else ""
-            fields = step.get("decision_fields") or {}
+            fields = step.get("state_fields") or {}
             phase = fields.get("phase", "unknown") if isinstance(fields, dict) else "unknown"
             policies = step.get("activated_policies") or []
             lines.extend([
@@ -139,7 +139,7 @@ def render(total: int, failures: list[tuple[int, dict]], full: bool) -> str:
             ])
             if admissible is False or full:
                 lines.extend([
-                    "Decision fields:",
+                    "State fields:",
                     "",
                     indented(fields),
                     "",
@@ -147,7 +147,7 @@ def render(total: int, failures: list[tuple[int, dict]], full: bool) -> str:
             if full:
                 for label, key in (
                     ("Thought", "thought"),
-                    ("Raw decision", "decision"),
+                    ("Raw state", "state"),
                     ("Admissible commands", "admissible_gt"),
                 ):
                     lines.extend([label + ":", "", indented(step.get(key, "")), ""])
@@ -157,12 +157,12 @@ def render(total: int, failures: list[tuple[int, dict]], full: bool) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path, help="eval_decision_*.jsonl file")
+    parser.add_argument("input", type=Path, help="eval_state_*.jsonl file")
     parser.add_argument("--out", type=Path, help="write Markdown here (default: stdout)")
     parser.add_argument(
         "--full",
         action="store_true",
-        help="also include each step's thought, raw decision, and admissible commands",
+        help="also include each step's thought, raw state, and admissible commands",
     )
     args = parser.parse_args()
 

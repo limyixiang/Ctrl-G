@@ -19,9 +19,9 @@ def make_turn(
     action,
     used_head_repair=False,
     used_thought_repair=False,
-    used_decision_repair=False,
+    used_state_repair=False,
     thought_truncated=False,
-    decision_truncated=False,
+    state_truncated=False,
     tail_truncated=False,
     action_close_found=True,
     tail_span_exact=True,
@@ -35,9 +35,9 @@ def make_turn(
         ),
         used_head_repair=used_head_repair,
         used_thought_repair=used_thought_repair,
-        used_decision_repair=used_decision_repair,
+        used_state_repair=used_state_repair,
         thought_truncated=thought_truncated,
-        decision_truncated=decision_truncated,
+        state_truncated=state_truncated,
         tail_truncated=tail_truncated,
         tail_span_exact=tail_span_exact,
         hmm_prefix_token_ids=hmm_prefix_token_ids,
@@ -163,7 +163,7 @@ class RolloutCollectionTests(unittest.TestCase):
             self.assertEqual(
                 state[3], {"admissible_raw_model_sample": 1}
             )
-            self.assertEqual(state[4]["decision"]["exclusions"], {"parse_failure": 1})
+            self.assertEqual(state[4]["state"]["exclusions"], {"parse_failure": 1})
             self.assertEqual(
                 samples_path.read_text(encoding="utf-8"),
                 "".join(json.dumps(record) + "\n" for record in committed_samples),
@@ -234,7 +234,7 @@ class RolloutCollectionTests(unittest.TestCase):
                             "sample": 0,
                             "sample_attempts": 1,
                             "action": action,
-                            "decision": "continue",
+                            "state": "continue",
                             "observation": observation,
                         }
                     ],
@@ -250,7 +250,7 @@ class RolloutCollectionTests(unittest.TestCase):
                         {
                             "selected_sample": 0,
                             "sample_attempts": 1,
-                            "decision": "continue",
+                            "state": "continue",
                             "action": action,
                             "observation": observation,
                         }
@@ -350,15 +350,15 @@ class RolloutCollectionTests(unittest.TestCase):
                 run_rollouts.read_history_records(history_path), histories[:1]
             )
 
-    def test_resume_retains_terminal_ineligible_decision_failure(self):
+    def test_resume_retains_terminal_ineligible_state_failure(self):
         sample = {
             "episode": 0,
             "step": 0,
             "sample": 0,
             "action": "",
-            "decision_attempts": 5,
+            "state_attempts": 5,
             "distill_eligible": False,
-            "distill_exclusion_reasons": ["decision_generation_exhausted"],
+            "distill_exclusion_reasons": ["state_generation_exhausted"],
         }
         trace = {
             "step": 0,
@@ -368,9 +368,9 @@ class RolloutCollectionTests(unittest.TestCase):
             "sample_attempts": 1,
             "action": "",
             "action_taken": "",
-            "decision": "",
-            "fallback_reason": "decision_generation_exhausted",
-            "termination_reason": "decision_generation_exhausted",
+            "state": "",
+            "fallback_reason": "state_generation_exhausted",
+            "termination_reason": "state_generation_exhausted",
             "observation": "Still here.",
         }
         episode = {
@@ -378,9 +378,9 @@ class RolloutCollectionTests(unittest.TestCase):
             "gamefile": "game-0",
             "task_key": "put",
             "success": False,
-            "termination_reason": "decision_generation_exhausted",
+            "termination_reason": "state_generation_exhausted",
             "num_steps": 1,
-            "advance_sources": ["decision_generation_exhausted"],
+            "advance_sources": ["state_generation_exhausted"],
             "advance_trace": [trace],
         }
         history_step = dict(trace)
@@ -389,7 +389,7 @@ class RolloutCollectionTests(unittest.TestCase):
             "gamefile": "game-0",
             "task_key": "put",
             "success": False,
-            "termination_reason": "decision_generation_exhausted",
+            "termination_reason": "state_generation_exhausted",
             "steps": [history_step],
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -409,8 +409,8 @@ class RolloutCollectionTests(unittest.TestCase):
 
         self.assertEqual(state[0:3], (1, 1, 0))
         self.assertEqual(
-            state[4]["decision"]["exclusions"],
-            {"decision_generation_exhausted": 1},
+            state[4]["state"]["exclusions"],
+            {"state_generation_exhausted": 1},
         )
         self.assertEqual(
             state[6],
@@ -428,7 +428,7 @@ class RolloutCollectionTests(unittest.TestCase):
     def test_metadata_progress_reports_episode_successes(self):
         metadata = {"num_episodes": 4}
         per_format = {
-            "decision": {
+            "state": {
                 "samples": 3,
                 "eligible": 2,
                 "exclusions": Counter({"parse_failure": 1}),
@@ -447,7 +447,7 @@ class RolloutCollectionTests(unittest.TestCase):
                     {"admissible_raw_model_sample": 2}
                 ),
                 per_format=per_format,
-                decision_retry_counts=Counter(
+                state_retry_counts=Counter(
                     {
                         "calls": 4,
                         "attempts": 8,
@@ -463,10 +463,10 @@ class RolloutCollectionTests(unittest.TestCase):
         self.assertEqual(written["successful_episodes"], 1)
         self.assertEqual(written["success_rate"], 0.5)
         self.assertEqual(written["collection_status"], "in_progress")
-        self.assertEqual(written["decision_retries"]["retry_rate"], 0.5)
-        self.assertEqual(written["decision_retries"]["recovery_rate"], 0.5)
+        self.assertEqual(written["state_retries"]["retry_rate"], 0.5)
+        self.assertEqual(written["state_retries"]["recovery_rate"], 0.5)
         self.assertEqual(
-            written["decision_retries"]["exhausted_episode_rate"], 0.5
+            written["state_retries"]["exhausted_episode_rate"], 0.5
         )
 
     def test_v3_history_reconciles_attempt_count_and_executed_action(self):
@@ -479,7 +479,7 @@ class RolloutCollectionTests(unittest.TestCase):
                 {
                     "selected_sample": 1,
                     "sample_attempts": 2,
-                    "decision": "try sink",
+                    "state": "try sink",
                     "action": "go to sink 9",
                     "action_taken": "go to sink 9",
                     "fallback_reason": None,
@@ -497,7 +497,7 @@ class RolloutCollectionTests(unittest.TestCase):
                 {
                     "sample": 1,
                     "sample_attempts": 2,
-                    "decision": "try sink",
+                    "state": "try sink",
                     "action": "go to sink 9",
                     "action_taken": "go to sink 9",
                     "fallback_reason": None,
@@ -568,13 +568,13 @@ class RolloutCollectionTests(unittest.TestCase):
             [],
         )
 
-    def test_distillation_excludes_truncated_decision(self):
+    def test_distillation_excludes_truncated_state(self):
         turn = make_turn(
             parse_ok=True,
             action="look",
             used_head_repair=True,
-            used_decision_repair=True,
-            decision_truncated=True,
+            used_state_repair=True,
+            state_truncated=True,
         )
         self.assertEqual(
             run_rollouts.distill_exclusion_reasons(
@@ -583,7 +583,7 @@ class RolloutCollectionTests(unittest.TestCase):
                 max_hmm_prefix_tokens=None,
                 max_hmm_sequence_tokens=128,
             ),
-            ["synthetic_decision_close", "decision_truncated"],
+            ["synthetic_state_close", "state_truncated"],
         )
 
     def test_distillation_keeps_structurally_valid_inadmissible_action(self):

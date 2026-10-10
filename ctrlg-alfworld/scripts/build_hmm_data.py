@@ -1,4 +1,4 @@
-"""Build the decision-format Ctrl-G HMM train/dev/LVD tensors."""
+"""Build the state-format Ctrl-G HMM train/dev/LVD tensors."""
 
 import argparse
 import json
@@ -99,9 +99,9 @@ def main():
     all_eligible = load_eligible_records(
         args.samples, selected_actions=selected_actions
     )
-    records = [item for item in all_eligible if bool(item["use_decision"])]
+    records = [item for item in all_eligible if bool(item["use_state"])]
     if not records:
-        raise ValueError("no eligible decision-format records")
+        raise ValueError("no eligible state-format records")
     collection_regime = validate_prompt_regime(records)
     if args.tokenizer != collection_regime["tokenizer"]:
         raise ValueError(
@@ -189,8 +189,8 @@ def main():
         "no_oracle_filtering": True,
         "skills_sha256": records[0].get("skills_sha256"),
         "eligible_records_in_source": len(all_eligible),
-        "eligible_decision_records": len(records),
-        "ignored_non_decision_records": len(all_eligible) - len(records),
+        "eligible_state_records": len(records),
+        "ignored_non_state_records": len(all_eligible) - len(records),
         "train_records": len(train_records),
         "dev_records": len(dev_records),
         "train_state_groups": len(train_states),

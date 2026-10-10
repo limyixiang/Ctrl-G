@@ -3,7 +3,8 @@ from pathlib import Path
 
 ACTION_OPEN, ACTION_CLOSE = "<action>", "</action>"
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
-DECISION_OPEN, DECISION_CLOSE = "<decision>", "</decision>"
+STATE_OPEN, STATE_CLOSE = "<state>", "</state>"
+PROMPT_FORMAT = "state_with_persistent_history_no_oracle_v1"
 
 SYSTEM_INSTRUCTION = "You are an expert agent operating in the ALFRED Embodied Environment."
 
@@ -26,7 +27,7 @@ class Step:
     thought: str
     action: str
     observation: str
-    decision: str = ""
+    state: str = ""
 
 def build_user_prompt(
     skill_content: str,
@@ -35,9 +36,9 @@ def build_user_prompt(
     current_observation: str,
     obs_history: list[Step],
     *,
-    use_decision: bool,
+    use_state: bool,
 ):
-    """Build one prompt for the matched decision-agent experiment.
+    """Build one prompt for the matched state-agent experiment.
 
     TextWorld's admissible commands are never accepted by this function. Both
     experimental conditions therefore receive byte-identical skill and prompt
@@ -60,19 +61,19 @@ def build_user_prompt(
         action_history.append(f"\t> {h.observation.strip()}")
     action_history = "\n".join(action_history)
 
-    # if use_decision:
-    #     decision_instruction = (
-    #         f"After thinking, emit one short decision in {DECISION_OPEN} "
-    #         f"{DECISION_CLOSE}, then emit exactly one action in "
+    # if use_state:
+    #     state_instruction = (
+    #         f"After thinking, emit one short state in {STATE_OPEN} "
+    #         f"{STATE_CLOSE}, then emit exactly one action in "
     #         f"{ACTION_OPEN} {ACTION_CLOSE}."
     #     )
     # else:
-    #     decision_instruction = (
+    #     state_instruction = (
     #         f"After thinking, emit exactly one action in {ACTION_OPEN} "
     #         f"{ACTION_CLOSE}, with no text between the thinking span and "
     #         f"{ACTION_OPEN}."
     #     )
-    decision_instruction = ""
+    state_instruction = ""
 
     if len(obs_history) > 0:
         obs_template = _load_md(TEMPLATED_OBS_WITH_HIST_PATH)
@@ -86,7 +87,7 @@ def build_user_prompt(
         action_history=action_history,
         current_step=len(obs_history)+1,
         current_observation=current_observation,
-        decision_instruction=decision_instruction,
+        state_instruction=state_instruction,
         action_open=ACTION_OPEN,
         action_close=ACTION_CLOSE
     )

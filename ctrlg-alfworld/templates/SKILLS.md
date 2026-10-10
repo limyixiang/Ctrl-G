@@ -5,7 +5,7 @@ This skill guides agents operating in the ALFWorld text-based embodied environme
 The agent must complete household tasks by navigating rooms, interacting with objects,
 and using appliances.
 
-**Output format**: Use the model's native thinking mode, then `<decision>...</decision>` for one short summarized decision and `<action>...</action>` for the chosen action.
+**Output format**: Use the model's native thinking mode, then `<state>...</state>` for a concise summary of the task-relevant state and `<action>...</action>` for the chosen action.
 
 ---
 
@@ -191,15 +191,15 @@ template: "inventory"
 preconditions: []
 ```
 
-## Decision Pre-check Contract
+## State Pre-check Contract
 
-Use the model's native thinking mode. After thinking, emit exactly one `<decision>...</decision>` block followed by exactly one `<action>...</action>` block.
+Use the model's native thinking mode. After thinking, emit exactly one `<state>...</state>` block followed by exactly one `<action>...</action>` block.
 
-The decision must contain a single flow-style YAML mapping that summarizes the task-relevant state immediately before the chosen action. Do not include prose outside the mapping.
+The state must contain a single flow-style YAML mapping that summarizes the task-relevant state immediately before the chosen action. Do not include prose outside the mapping.
 
 Example:
 
-<decision>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, previous_action: move creditcard 2 to dresser 1, arrived_receptacle_state: open, held_relation: none, search: {locations_searched: [countertop 1, dresser 1], locations_to_search: [drawer 1, drawer 2]}, phase: acquire_second}</decision>
+<state>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, previous_action: move creditcard 2 to dresser 1, arrived_receptacle_state: open, held_relation: none, search: {locations_searched: [countertop 1, dresser 1], locations_to_search: [drawer 1, drawer 2]}, phase: acquire_second}</state>
 <action>go to countertop 1</action>
 
 ### Value Rules
@@ -223,7 +223,7 @@ Example:
 
 ### Search Ledger
 
-Every decision must include a `search` mapping:
+Every state must include a `search` mapping:
 
 - `locations_to_search`: ordered exact receptacle instances whose contents have not yet been observed during the current target search.
 - `locations_searched`: exact receptacle instances whose contents have already been observed.
@@ -234,7 +234,7 @@ Every decision must include a `search` mapping:
 - A searched location may be revisited to acquire a target known to be there or to use it as a tool or destination. It must not be revisited merely to search it again.
 - If the target has not been found, the next search action should normally inspect the first admissible entry in `locations_to_search`.
 
-### Task-specific Decision Schemas
+### Task-specific State Schemas
 
 Pick and place:
 
@@ -272,15 +272,15 @@ Pick two and place:
 
 Allowed phases: `search`, `acquire`, `go_destination`, `prepare_destination`, `deliver_first`, `acquire_second`, `deliver_second`.
 
-## Machine-readable Decision and Policy Contract
+## Machine-readable State and Policy Contract
 
-The following versioned blocks are authoritative. Every decision uses the
+The following versioned blocks are authoritative. Every state uses the
 listed key order and one-line flow-style YAML. `previous_action`,
 `arrived_receptacle_state`, and `held_relation` are the model's own claims from
 the supplied trajectory. The two `puttwo` target records are independent and
 may name the same location.
 
-```decision-schema
+```state-schema
 version: 1
 task: put
 fields:
@@ -298,7 +298,7 @@ fields:
   - {name: phase, schema: {type: enum, values: [search, acquire, go_destination, prepare_destination, deliver]}}
 ```
 
-```decision-schema
+```state-schema
 version: 1
 task: clean
 fields:
@@ -318,7 +318,7 @@ fields:
   - {name: phase, schema: {type: enum, values: [search, acquire, go_tool, transform, go_destination, prepare_destination, deliver]}}
 ```
 
-```decision-schema
+```state-schema
 version: 1
 task: heat
 fields:
@@ -338,7 +338,7 @@ fields:
   - {name: phase, schema: {type: enum, values: [search, acquire, go_tool, transform, go_destination, prepare_destination, deliver]}}
 ```
 
-```decision-schema
+```state-schema
 version: 1
 task: cool
 fields:
@@ -358,7 +358,7 @@ fields:
   - {name: phase, schema: {type: enum, values: [search, acquire, go_tool, transform, go_destination, prepare_destination, deliver]}}
 ```
 
-```decision-schema
+```state-schema
 version: 1
 task: examine
 fields:
@@ -378,7 +378,7 @@ fields:
   - {name: phase, schema: {type: enum, values: [search_target, acquire, search_tool, go_tool, use_tool]}}
 ```
 
-```decision-schema
+```state-schema
 version: 1
 task: puttwo
 fields:

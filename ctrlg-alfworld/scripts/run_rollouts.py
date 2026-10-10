@@ -1,6 +1,6 @@
 """Collect prompt-conditioned raw model samples for ALFWorld HMM distillation.
 
-Every sample uses the persistent-decision prompt format that is evaluated in
+Every sample uses the persistent-state prompt format that is evaluated in
 both active conditions. One nonempty model action defines the trajectory at
 each state, but only admissible raw generations are HMM training examples.
 """
@@ -23,12 +23,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ctrlg_alfworld.agent_loop import parse_initial_observation, process_ob
 from ctrlg_alfworld.backends import (
-    DecisionGenerationExhausted,
+    StateGenerationExhausted,
     GenConfig,
     HFBackend,
     VLLMBackend,
 )
 from ctrlg_alfworld.prompts import (
+    PROMPT_FORMAT,
     SYSTEM_INSTRUCTION,
     Step,
     build_user_prompt,
@@ -57,13 +58,13 @@ RESUME_COMPATIBILITY_FIELDS = (
     "schema_version",
     "policy_version",
     "no_oracle_filtering",
-    "constrained_decision_collection",
+    "constrained_state_collection",
     "max_steps",
     "max_thought_tokens",
-    "max_decision_tokens",
+    "max_state_tokens",
     "max_action_tokens",
-    "decision_max_attempts",
-    "decision_retry_temperature",
+    "state_max_attempts",
+    "state_retry_temperature",
     "temperature",
     "max_hmm_prefix_tokens",
     "max_hmm_sequence_tokens",
@@ -287,7 +288,7 @@ def _history_matches_episode(history_record: dict, episode_record: dict) -> bool
     return all(
         history_step.get("action_taken", history_step.get("action"))
         == trace_step.get("action_taken", trace_step.get("action"))
-        and history_step.get("decision", "") == trace_step.get("decision", "")
+        and history_step.get("state", "") == trace_step.get("state", "")
         and history_step.get("selected_sample") == trace_step.get("sample")
         and history_step.get("sample_attempts") == trace_step.get("sample_attempts")
         and history_step.get("fallback_reason")
@@ -297,13 +298,13 @@ def _history_matches_episode(history_record: dict, episode_record: dict) -> bool
     )
 
 
-def update_decision_retry_counts(
+def update_state_retry_counts(
     counts: Counter, *, attempts: int, exhausted: bool
 ) -> None:
-    """Accumulate one structured-decision call for collection reporting."""
+    """Accumulate one structured-state call for collection reporting."""
 
     if not isinstance(attempts, int) or attempts < 1:
-        raise ValueError(f"invalid decision attempt count: {attempts!r}")
+        raise ValueError(f"invalid state attempt count: {attempts!r}")
     counts["calls"] += 1
     counts["attempts"] += attempts
     if attempts > 1:
@@ -314,7 +315,7 @@ def update_decision_retry_counts(
         counts["exhausted_calls"] += 1
 
 
-def decision_retry_metrics(counts: Counter, *, completed_episodes: int) -> dict:
+def state_retry_metrics(counts: Counter, *, completed_episodes: int) -> dict:
     """Render retry, recovery, and exhausted-episode rates for one model run."""
 
     calls = counts["calls"]
@@ -394,11 +395,11 @@ def recover_resume_state(
                     episode_complete = False
                     incomplete_artifact = "advance trace"
                     break
-                terminal_decision_failure = (
+                terminal_state_failure = (
                     trace_step.get("termination_reason")
-                    == "decision_generation_exhausted"
+                    == "state_generation_exhausted"
                 )
-                if terminal_decision_failure:
+                if terminal_state_failure:
                     trace_position_ok = (
                         trace_step.get("sample") is None
                         and trace_step.get("failed_sample") == sample_attempts - 1
@@ -439,7 +440,7 @@ def recover_resume_state(
                         episode_complete = False
                         break
                     action = record.get("action")
-                    if terminal_decision_failure:
+                    if terminal_state_failure:
                         action_ok = isinstance(action, str) and not action
                     else:
                         action_ok = isinstance(action, str) and (
@@ -453,14 +454,14 @@ def recover_resume_state(
                     sample_exclusions = record.get(
                         "distill_exclusion_reasons", []
                     )
-                    decision_exhausted = (
-                        "decision_generation_exhausted" in sample_exclusions
+                    state_exhausted = (
+                        "state_generation_exhausted" in sample_exclusions
                     )
                     try:
-                        update_decision_retry_counts(
+                        update_state_retry_counts(
                             episode_retry_counts,
-                            attempts=record.get("decision_attempts", 1),
-                            exhausted=decision_exhausted,
+                            attempts=record.get("state_attempts", 1),
+                            exhausted=state_exhausted,
                         )
                     except ValueError:
                         episode_complete = False
@@ -513,7 +514,7 @@ def recover_resume_state(
         for episode_record in episode_records[:committed_episodes]
     )
     per_format = {
-        "decision": {
+        "state": {
             "samples": sample_count,
             "eligible": eligible_count,
             "exclusions": exclusions,
@@ -540,7 +541,7 @@ def update_metadata_progress(
     eligible_count: int,
     advance_source_counts: Counter,
     per_format: dict,
-    decision_retry_counts: Counter | None = None,
+    state_retry_counts: Counter | None = None,
 ) -> None:
     metadata["completed_episodes"] = completed_episodes
     metadata["successful_episodes"] = successful_episodes
@@ -563,8 +564,8 @@ def update_metadata_progress(
             for name, counts in per_format.items()
         },
     }
-    metadata["decision_retries"] = decision_retry_metrics(
-        decision_retry_counts or Counter(),
+    metadata["state_retries"] = state_retry_metrics(
+        state_retry_counts or Counter(),
         completed_episodes=completed_episodes,
     )
     write_json_atomic(metadata_path, metadata)
@@ -622,10 +623,10 @@ def distill_exclusion_reasons(
     max_hmm_prefix_tokens,
     max_hmm_sequence_tokens,
 ):
-    """Explain why a generated decision/action sequence cannot be distilled.
+    """Explain why a generated state/action sequence cannot be distilled.
 
     Native thinking is outside the HMM sequence, so a repaired or truncated
-    thought does not invalidate an otherwise exact decision/action span.
+    thought does not invalidate an otherwise exact state/action span.
     """
 
     reasons = []
@@ -635,10 +636,10 @@ def distill_exclusion_reasons(
         reasons.append("missing_exact_hmm_prefix")
     if not turn.parsed.action_close_found:
         reasons.append("missing_action_close")
-    if turn.used_decision_repair:
-        reasons.append("synthetic_decision_close")
-    if turn.decision_truncated:
-        reasons.append("decision_truncated")
+    if turn.used_state_repair:
+        reasons.append("synthetic_state_close")
+    if turn.state_truncated:
+        reasons.append("state_truncated")
     if turn.tail_truncated:
         reasons.append("tail_truncated")
     if not turn.tail_span_exact:
@@ -669,19 +670,19 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=100)
     parser.add_argument("--max_steps", type=int, default=50)
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
-    parser.add_argument("--max_decision_tokens", type=int, default=512)
+    parser.add_argument("--max_state_tokens", type=int, default=512)
     parser.add_argument("--max_action_tokens", type=int, default=32)
     parser.add_argument(
-        "--decision_max_attempts",
+        "--state_max_attempts",
         type=int,
         default=5,
-        help="Maximum total vLLM structured-decision attempts per sample.",
+        help="Maximum total vLLM structured-state attempts per sample.",
     )
     parser.add_argument(
-        "--decision_retry_temperature",
+        "--state_retry_temperature",
         type=float,
         default=0.2,
-        help="Temperature for attempts after the initial greedy decision.",
+        help="Temperature for attempts after the initial greedy state.",
     )
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--max_hmm_prefix_tokens", type=int, default=None)
@@ -711,15 +712,15 @@ def main():
 
     if args.overwrite and args.resume:
         parser.error("--overwrite and --resume are mutually exclusive")
-    if args.backend == "vllm" and args.decision_max_attempts < 1:
-        parser.error("--decision_max_attempts must be at least one")
+    if args.backend == "vllm" and args.state_max_attempts < 1:
+        parser.error("--state_max_attempts must be at least one")
     if (
         args.backend == "vllm"
-        and args.decision_max_attempts > 1
-        and args.decision_retry_temperature <= 0
+        and args.state_max_attempts > 1
+        and args.state_retry_temperature <= 0
     ):
         parser.error(
-            "--decision_retry_temperature must be positive when retries are enabled"
+            "--state_retry_temperature must be positive when retries are enabled"
         )
     if args.resume and args.backend != "vllm":
         parser.error(
@@ -763,12 +764,12 @@ def main():
 
     generation_config = GenConfig(
         max_thought_tokens=args.max_thought_tokens,
-        max_decision_tokens=args.max_decision_tokens,
+        max_state_tokens=args.max_state_tokens,
         max_action_tokens=args.max_action_tokens,
         rollout_temperature=args.temperature,
         seed=args.seed,
-        decision_max_attempts=args.decision_max_attempts,
-        decision_retry_temperature=args.decision_retry_temperature,
+        state_max_attempts=args.state_max_attempts,
+        state_retry_temperature=args.state_retry_temperature,
     )
     if args.backend == "vllm":
         backend = VLLMBackend(
@@ -793,35 +794,35 @@ def main():
         "split": args.split,
         "num_episodes": args.num_episodes,
         "sampling_policy": "single_trajectory_resample_empty_action",
-        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+        "prompt_format": PROMPT_FORMAT,
         "schema_version": skillset.schema_version,
         "policy_version": skillset.policy_version,
         "no_oracle_filtering": True,
-        "constrained_decision_collection": True,
+        "constrained_state_collection": True,
         "max_steps": args.max_steps,
         "max_thought_tokens": args.max_thought_tokens,
-        "max_decision_tokens": args.max_decision_tokens,
+        "max_state_tokens": args.max_state_tokens,
         "max_action_tokens": args.max_action_tokens,
-        "decision_max_attempts": args.decision_max_attempts,
-        "decision_retry_temperature": args.decision_retry_temperature,
+        "state_max_attempts": args.state_max_attempts,
+        "state_retry_temperature": args.state_retry_temperature,
         "temperature": args.temperature,
         "max_hmm_prefix_tokens": args.max_hmm_prefix_tokens,
         "max_hmm_sequence_tokens": args.max_hmm_sequence_tokens,
         "seed": args.seed,
         "generation_schedule": (
-            "greedy_thought_bounded_structured_decision_retry_then_sampled_action"
+            "greedy_thought_bounded_structured_state_retry_then_sampled_action"
             if args.backend == "vllm"
-            else "greedy_thought_hard_decision_then_sampled_action"
+            else "greedy_thought_hard_state_then_sampled_action"
         ),
         "candidate_seed_scheme": (
-            "sha256(base_seed,episode,step,sample,candidate,phase_with_decision_attempt)"
+            "sha256(base_seed,episode,step,sample,candidate,phase_with_state_attempt)"
             if args.backend == "vllm"
             else "torch_rng_stream"
         ),
         "environment_seed_scheme": "sorted_gamefiles_then_textworld_seed",
         "game_files_sha256": json_sha256(env_factory.game_files),
         "history_format": (
-            "episode_jsonl_v4_single_trajectory_empty_and_decision_retry"
+            "episode_jsonl_v4_single_trajectory_empty_and_state_retry"
         ),
         "device": args.device if args.backend == "hf" else "vllm_server",
         "dtype": args.dtype if args.backend == "hf" else "vllm_server",
@@ -845,7 +846,7 @@ def main():
                 advance_source_counts,
                 per_format,
                 successful_episodes,
-                decision_retry_counts,
+                state_retry_counts,
             ) = recover_resume_state(
                 samples_path,
                 episodes_path,
@@ -895,13 +896,13 @@ def main():
         successful_episodes = 0
         advance_source_counts = Counter()
         per_format = {
-            "decision": {
+            "state": {
                 "samples": 0,
                 "eligible": 0,
                 "exclusions": Counter(),
             },
         }
-        decision_retry_counts = Counter()
+        state_retry_counts = Counter()
         metadata["resume_count"] = 0
         metadata["resume_history"] = []
 
@@ -914,7 +915,7 @@ def main():
         eligible_count=eligible_count,
         advance_source_counts=advance_source_counts,
         per_format=per_format,
-        decision_retry_counts=decision_retry_counts,
+        state_retry_counts=state_retry_counts,
     )
 
     output_mode = "a" if args.resume else "w"
@@ -944,14 +945,14 @@ def main():
                 )
                 sampled_turns = []
                 candidate_audit = []
-                use_decision = True
+                use_state = True
                 user_prompt = build_user_prompt(
                     skill_content=skillset.raw_markdown,
                     task_description=task_description,
                     initial_observation=initial_observation,
                     current_observation=observation,
                     obs_history=history,
-                    use_decision=use_decision,
+                    use_state=use_state,
                 )
                 prompt_text = render_prompt(
                     backend.tokenizer, SYSTEM_INSTRUCTION, user_prompt
@@ -971,34 +972,34 @@ def main():
                             count=1,
                             seed_context=(episode_index, step_index, sample_index),
                         )[0]
-                    except DecisionGenerationExhausted as exc:
+                    except StateGenerationExhausted as exc:
                         attempt_records = list(exc.attempt_records)
-                        decision_attempts = len(attempt_records)
+                        state_attempts = len(attempt_records)
                         failure_reasons = [
                             item["reason"] for item in attempt_records
                         ]
-                        exclusion_reasons = ["decision_generation_exhausted"]
-                        update_decision_retry_counts(
-                            decision_retry_counts,
-                            attempts=decision_attempts,
+                        exclusion_reasons = ["state_generation_exhausted"]
+                        update_state_retry_counts(
+                            state_retry_counts,
+                            attempts=state_attempts,
                             exhausted=True,
                         )
                         candidate_audit.append(
                             {
                                 "sample": sample_index,
-                                "model_decision": "",
+                                "model_state": "",
                                 "model_action": "",
                                 "action_was_admissible": None,
                                 "parse_ok": False,
                                 "parse_errors": exclusion_reasons,
-                                "decision_attempts": decision_attempts,
-                                "decision_retry_used": decision_attempts > 1,
-                                "decision_failure_reasons": failure_reasons,
+                                "state_attempts": state_attempts,
+                                "state_retry_used": state_attempts > 1,
+                                "state_failure_reasons": failure_reasons,
                                 "distill_eligible": False,
                                 "distill_exclusion_reasons": exclusion_reasons,
                             }
                         )
-                        decision_latency = sum(
+                        state_latency = sum(
                             item["latency_seconds"] for item in attempt_records
                         )
                         failure_record = {
@@ -1007,30 +1008,30 @@ def main():
                             "sample": sample_index,
                             "gamefile": gamefile,
                             "task_key": task_key,
-                            "use_decision": use_decision,
-                            "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+                            "use_state": use_state,
+                            "prompt_format": PROMPT_FORMAT,
                             "schema_version": skillset.schema_version,
                             "policy_version": skillset.policy_version,
-                            "constrained_decision_collection": True,
+                            "constrained_state_collection": True,
                             "no_oracle_filtering": True,
                             "skills_sha256": skillset.content_sha256,
                             "model": args.model,
                             "tokenizer": args.tokenizer or args.model,
                             "temperature": args.temperature,
-                            "decision_max_attempts": args.decision_max_attempts,
-                            "decision_retry_temperature": (
-                                args.decision_retry_temperature
+                            "state_max_attempts": args.state_max_attempts,
+                            "state_retry_temperature": (
+                                args.state_retry_temperature
                             ),
                             "seed": args.seed,
                             "head_seed": exc.thought_seed,
-                            "decision_seed": None,
-                            "decision_attempts": decision_attempts,
-                            "decision_retry_used": decision_attempts > 1,
-                            "decision_attempt_seeds": [
+                            "state_seed": None,
+                            "state_attempts": state_attempts,
+                            "state_retry_used": state_attempts > 1,
+                            "state_attempt_seeds": [
                                 item["seed"] for item in attempt_records
                             ],
-                            "decision_failure_reasons": failure_reasons,
-                            "decision_attempt_records": attempt_records,
+                            "state_failure_reasons": failure_reasons,
+                            "state_attempt_records": attempt_records,
                             "tail_seed": None,
                             "prompt_text": prompt_text,
                             "prompt_token_ids": prompt_token_ids,
@@ -1038,7 +1039,7 @@ def main():
                             "raw_tail": "",
                             "head_token_ids": list(exc.thought.token_ids),
                             "thought_token_ids": list(exc.thought.token_ids),
-                            "decision_token_ids": [],
+                            "state_token_ids": [],
                             "hmm_prefix_text": "",
                             "hmm_prefix_token_ids": [],
                             "action": "",
@@ -1049,38 +1050,38 @@ def main():
                             "parse_errors": exclusion_reasons,
                             "used_head_repair": not exc.thought.stop_found,
                             "used_thought_repair": not exc.thought.stop_found,
-                            "used_decision_repair": False,
+                            "used_state_repair": False,
                             "head_stop_found": False,
                             "head_truncated": True,
                             "thought_stop_found": exc.thought.stop_found,
                             "thought_truncated": exc.thought.truncated,
-                            "decision_stop_found": False,
-                            "decision_truncated": True,
+                            "state_stop_found": False,
+                            "state_truncated": True,
                             "tail_stop_found": False,
                             "tail_truncated": False,
                             "tail_span_exact": False,
-                            "decision_schema_valid": False,
+                            "state_schema_valid": False,
                             "distill_eligible": False,
                             "distill_exclusion_reasons": exclusion_reasons,
                             "action_was_admissible": None,
                             "admissible_gt": admissible_actions,
                             "head_latency_seconds": (
-                                exc.thought.latency_seconds + decision_latency
+                                exc.thought.latency_seconds + state_latency
                             ),
                             "thought_latency_seconds": exc.thought.latency_seconds,
-                            "decision_latency_seconds": decision_latency,
+                            "state_latency_seconds": state_latency,
                             "action_latency_seconds": 0.0,
                         }
                         samples_file.write(json.dumps(failure_record) + "\n")
                         sample_count += 1
-                        per_format["decision"]["samples"] += 1
-                        per_format["decision"]["exclusions"].update(
+                        per_format["state"]["samples"] += 1
+                        per_format["state"]["exclusions"].update(
                             exclusion_reasons
                         )
 
                         sample_index += 1
                         episode_termination_reason = (
-                            "decision_generation_exhausted"
+                            "state_generation_exhausted"
                         )
                         failure_step = {
                             "step": step_index,
@@ -1089,29 +1090,29 @@ def main():
                             "failed_sample": sample_index - 1,
                             "sample_attempts": sample_index,
                             "empty_action_retries": sample_index - 1,
-                            "source": "decision_generation_exhausted",
+                            "source": "state_generation_exhausted",
                             "candidates": candidate_audit,
-                            "selected_model_decision": "",
+                            "selected_model_state": "",
                             "selected_model_action": "",
                             "action": "",
                             "action_taken": "",
-                            "decision": "",
+                            "state": "",
                             "fallback_used": False,
-                            "fallback_reason": "decision_generation_exhausted",
+                            "fallback_reason": "state_generation_exhausted",
                             "fallback_policy": None,
-                            "termination_reason": "decision_generation_exhausted",
+                            "termination_reason": "state_generation_exhausted",
                             "observation": observation,
                         }
                         history_audit.append(dict(failure_step))
                         advance_trace.append(dict(failure_step))
-                        advance_sources.append("decision_generation_exhausted")
-                        advance_source_counts["decision_generation_exhausted"] += 1
+                        advance_sources.append("state_generation_exhausted")
+                        advance_source_counts["state_generation_exhausted"] += 1
                         break
 
                     sampled_turns.append((sample_index, turn))
-                    update_decision_retry_counts(
-                        decision_retry_counts,
-                        attempts=turn.decision_attempts,
+                    update_state_retry_counts(
+                        state_retry_counts,
+                        attempts=turn.state_attempts,
                         exhausted=False,
                     )
                     hmm_sequence = (
@@ -1132,15 +1133,15 @@ def main():
                     candidate_audit.append(
                         {
                             "sample": sample_index,
-                            "model_decision": turn.parsed.decision,
+                            "model_state": turn.parsed.state,
                             "model_action": turn.parsed.action,
                             "action_was_admissible": action_was_admissible,
                             "parse_ok": turn.parsed.parse_ok,
                             "parse_errors": list(turn.parsed.errors),
-                            "decision_attempts": turn.decision_attempts,
-                            "decision_retry_used": turn.decision_retry_used,
-                            "decision_failure_reasons": list(
-                                turn.decision_failure_reasons
+                            "state_attempts": turn.state_attempts,
+                            "state_retry_used": turn.state_retry_used,
+                            "state_failure_reasons": list(
+                                turn.state_failure_reasons
                             ),
                             "distill_eligible": distill_eligible,
                             "distill_exclusion_reasons": exclusion_reasons,
@@ -1152,30 +1153,30 @@ def main():
                         "sample": sample_index,
                         "gamefile": gamefile,
                         "task_key": task_key,
-                        "use_decision": use_decision,
-                        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+                        "use_state": use_state,
+                        "prompt_format": PROMPT_FORMAT,
                         "schema_version": skillset.schema_version,
                         "policy_version": skillset.policy_version,
-                        "constrained_decision_collection": True,
+                        "constrained_state_collection": True,
                         "no_oracle_filtering": True,
                         "skills_sha256": skillset.content_sha256,
                         "model": args.model,
                         "tokenizer": args.tokenizer or args.model,
                         "temperature": args.temperature,
-                        "decision_max_attempts": args.decision_max_attempts,
-                        "decision_retry_temperature": (
-                            args.decision_retry_temperature
+                        "state_max_attempts": args.state_max_attempts,
+                        "state_retry_temperature": (
+                            args.state_retry_temperature
                         ),
                         "seed": args.seed,
                         "head_seed": turn.head_seed,
-                        "decision_seed": turn.decision_seed,
-                        "decision_attempts": turn.decision_attempts,
-                        "decision_retry_used": turn.decision_retry_used,
-                        "decision_attempt_seeds": list(
-                            turn.decision_attempt_seeds
+                        "state_seed": turn.state_seed,
+                        "state_attempts": turn.state_attempts,
+                        "state_retry_used": turn.state_retry_used,
+                        "state_attempt_seeds": list(
+                            turn.state_attempt_seeds
                         ),
-                        "decision_failure_reasons": list(
-                            turn.decision_failure_reasons
+                        "state_failure_reasons": list(
+                            turn.state_failure_reasons
                         ),
                         "tail_seed": turn.tail_seed,
                         "prompt_text": prompt_text,
@@ -1184,7 +1185,7 @@ def main():
                         "raw_tail": turn.parsed.raw_tail,
                         "head_token_ids": list(turn.head_token_ids),
                         "thought_token_ids": list(turn.thought_token_ids),
-                        "decision_token_ids": list(turn.decision_token_ids),
+                        "state_token_ids": list(turn.state_token_ids),
                         "hmm_prefix_text": turn.parsed.hmm_prefix_text,
                         "hmm_prefix_token_ids": list(turn.hmm_prefix_token_ids),
                         "action": turn.parsed.action,
@@ -1195,13 +1196,13 @@ def main():
                         "parse_errors": list(turn.parsed.errors),
                         "used_head_repair": turn.used_head_repair,
                         "used_thought_repair": turn.used_thought_repair,
-                        "used_decision_repair": turn.used_decision_repair,
+                        "used_state_repair": turn.used_state_repair,
                         "head_stop_found": turn.head_stop_found,
                         "head_truncated": turn.head_truncated,
                         "thought_stop_found": turn.thought_stop_found,
                         "thought_truncated": turn.thought_truncated,
-                        "decision_stop_found": turn.decision_stop_found,
-                        "decision_truncated": turn.decision_truncated,
+                        "state_stop_found": turn.state_stop_found,
+                        "state_truncated": turn.state_truncated,
                         "tail_stop_found": turn.tail_stop_found,
                         "tail_truncated": turn.tail_truncated,
                         "tail_span_exact": turn.tail_span_exact,
@@ -1211,13 +1212,13 @@ def main():
                         "admissible_gt": admissible_actions,
                         "head_latency_seconds": turn.head_latency_seconds,
                         "thought_latency_seconds": turn.thought_latency_seconds,
-                        "decision_latency_seconds": turn.decision_latency_seconds,
+                        "state_latency_seconds": turn.state_latency_seconds,
                         "action_latency_seconds": turn.action_latency_seconds,
                     }
                     samples_file.write(json.dumps(record) + "\n")
                     sample_count += 1
                     eligible_count += int(distill_eligible)
-                    format_key = "decision"
+                    format_key = "state"
                     per_format[format_key]["samples"] += 1
                     per_format[format_key]["eligible"] += int(distill_eligible)
                     per_format[format_key]["exclusions"].update(exclusion_reasons)
@@ -1237,8 +1238,8 @@ def main():
                     else "inadmissible_raw_model_sample"
                 )
                 advance_thought = selected_turn.parsed.thought
-                advance_decision = selected_turn.parsed.decision
-                selected_model_decision = selected_turn.parsed.decision
+                advance_state = selected_turn.parsed.state
+                selected_model_state = selected_turn.parsed.state
                 selected_model_action = selected_turn.parsed.action
                 fallback_reason = None
                 fallback_policy = None
@@ -1248,7 +1249,7 @@ def main():
                 history.append(
                     Step(
                         thought=advance_thought,
-                        decision=advance_decision,
+                        state=advance_state,
                         action=advance_action,
                         observation=observation,
                     )
@@ -1260,7 +1261,7 @@ def main():
                         "selected_sample": advance_sample,
                         "sample_attempts": sample_index,
                         "empty_action_retries": advance_sample,
-                        "selected_model_decision": selected_model_decision,
+                        "selected_model_state": selected_model_state,
                         "selected_model_action": selected_model_action,
                         "action_taken": advance_action,
                         "fallback_used": False,
@@ -1268,7 +1269,7 @@ def main():
                         "fallback_policy": fallback_policy,
                         # Retain the original fields for simple readers and
                         # completed-episode resume reconciliation.
-                        "decision": advance_decision,
+                        "state": advance_state,
                         "action": advance_action,
                         "observation": observation,
                     }
@@ -1282,11 +1283,11 @@ def main():
                         "sample_attempts": sample_index,
                         "empty_action_retries": advance_sample,
                         "source": advance_source,
-                        "selected_model_decision": selected_model_decision,
+                        "selected_model_state": selected_model_state,
                         "selected_model_action": selected_model_action,
                         "action": advance_action,
                         "action_taken": advance_action,
-                        "decision": advance_decision,
+                        "state": advance_state,
                         "fallback_reason": fallback_reason,
                         "fallback_policy": fallback_policy,
                         "observation": observation,
@@ -1335,7 +1336,7 @@ def main():
                 eligible_count=eligible_count,
                 advance_source_counts=advance_source_counts,
                 per_format=per_format,
-                decision_retry_counts=decision_retry_counts,
+                state_retry_counts=state_retry_counts,
             )
             print(
                 f"[{episode_index + 1}/{args.num_episodes}] "
@@ -1343,12 +1344,12 @@ def main():
                 f"success_rate={successful_episodes / (episode_index + 1):.3f} "
                 f"samples={sample_count} eligible={eligible_count} "
                 f"eligible_rate={eligible_count / max(sample_count, 1):.3f} "
-                f"decision_retry_rate="
-                f"{decision_retry_counts['retried_calls'] / max(decision_retry_counts['calls'], 1):.3f} "
-                f"decision_recovery_rate="
-                f"{decision_retry_counts['recovered_calls'] / max(decision_retry_counts['retried_calls'], 1):.3f} "
-                f"decision_exhausted_episode_rate="
-                f"{decision_retry_counts['exhausted_calls'] / (episode_index + 1):.3f}"
+                f"state_retry_rate="
+                f"{state_retry_counts['retried_calls'] / max(state_retry_counts['calls'], 1):.3f} "
+                f"state_recovery_rate="
+                f"{state_retry_counts['recovered_calls'] / max(state_retry_counts['retried_calls'], 1):.3f} "
+                f"state_exhausted_episode_rate="
+                f"{state_retry_counts['exhausted_calls'] / (episode_index + 1):.3f}"
             )
 
     update_metadata_progress(
@@ -1360,7 +1361,7 @@ def main():
         eligible_count=eligible_count,
         advance_source_counts=advance_source_counts,
         per_format=per_format,
-        decision_retry_counts=decision_retry_counts,
+        state_retry_counts=state_retry_counts,
     )
     atexit.unregister(_release_output_lock)
     _release_output_lock(lock_file)

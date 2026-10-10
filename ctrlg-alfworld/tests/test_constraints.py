@@ -9,11 +9,11 @@ from ctrlg_alfworld.constraints import (
     action_span_pattern,
     action_grammar_valid,
     compile_policy_language,
-    decision_body_pattern,
-    decision_span_pattern,
+    state_body_pattern,
+    state_span_pattern,
     dfa_accepts,
     lift_character_fsm,
-    parse_decision,
+    parse_state,
     policy_satisfied,
     regex_fsm,
     tokenize_continuation,
@@ -45,7 +45,7 @@ class ConstraintTests(unittest.TestCase):
         cls.skills = SkillSet.from_file(SKILLS)
         cls.tokenizer = CharacterTokenizer()
 
-    def put_decision(self, **overrides):
+    def put_state(self, **overrides):
         values = {
             "task": "put", "target_type": "cup", "target_id": "cup 1",
             "target_location": "countertop 1", "held": "none",
@@ -67,37 +67,52 @@ class ConstraintTests(unittest.TestCase):
         ) % values
 
     def test_all_six_schemas_compile(self):
-        self.assertEqual(set(self.skills.decision_schemas), {
+        self.assertEqual(set(self.skills.state_schemas), {
             "put", "clean", "heat", "cool", "examine", "puttwo"
         })
-        for schema in self.skills.decision_schemas.values():
-            self.assertFalse(regex_fsm(decision_body_pattern(schema, self.skills)).empty())
+        for schema in self.skills.state_schemas.values():
+            self.assertFalse(regex_fsm(state_body_pattern(schema, self.skills)).empty())
 
     def test_generated_patterns_leave_literal_spaces_unescaped(self):
         patterns = [action_span_pattern(self.skills)] + [
-            decision_span_pattern(schema, self.skills)
-            for schema in self.skills.decision_schemas.values()
+            state_span_pattern(schema, self.skills)
+            for schema in self.skills.state_schemas.values()
         ]
         for pattern in patterns:
             self.assertNotIn(r"\ ", pattern)
             self.assertFalse(regex_fsm(pattern).empty())
 
-        decision = parse_decision(
-            self.put_decision(arrived_receptacle_state="closed"),
-            self.skills.decision_schemas["put"], self.skills,
+        state = parse_state(
+            self.put_state(arrived_receptacle_state="closed"),
+            self.skills.state_schemas["put"], self.skills,
         )
-        required = compile_policy_language(decision, self.skills)
+        required = compile_policy_language(state, self.skills)
         self.assertNotIn(r"\ ", required.pattern)
 
     def test_fixed_order_and_categories_are_enforced(self):
-        schema = self.skills.decision_schemas["put"]
-        valid = self.put_decision()
-        self.assertEqual(parse_decision(valid, schema, self.skills)["target_type"], "cup")
+        schema = self.skills.state_schemas["put"]
+        valid = self.put_state()
+        self.assertEqual(parse_state(valid, schema, self.skills)["target_type"], "cup")
         reordered = valid.replace("target_type: cup, target_id: cup 1", "target_id: cup 1, target_type: cup")
         with self.assertRaisesRegex(ValueError, "does not match"):
-            parse_decision(reordered, schema, self.skills)
+            parse_state(reordered, schema, self.skills)
         with self.assertRaisesRegex(ValueError, "does not match"):
-            parse_decision(valid.replace("phase: acquire", "phase: impossible"), schema, self.skills)
+            parse_state(valid.replace("phase: acquire", "phase: impossible"), schema, self.skills)
+
+    def test_transformation_state_field_is_preserved_inside_state_summary(self):
+        for task, status, tool in (
+            ("clean", "clean", "sinkbasin"),
+            ("heat", "hot", "microwave"),
+            ("cool", "cool", "fridge"),
+        ):
+            with self.subTest(task=task):
+                text = self.put_state().replace("task: put", f"task: {task}", 1)
+                text = text.replace(
+                    "dest: shelf 1", f"state: {status}, tool: {tool} 1, dest: shelf 1", 1
+                )
+                fields = parse_state(text, self.skills.state_schemas[task], self.skills)
+                self.assertEqual(fields["state"], status)
+                self.assertIsNotNone(compile_policy_language(fields, self.skills))
 
     def test_puttwo_allows_two_targets_at_same_location(self):
         text = (
@@ -109,19 +124,19 @@ class ConstraintTests(unittest.TestCase):
             "{locations_searched: [countertop 1], locations_to_search: []}, "
             "phase: acquire}"
         )
-        parsed = parse_decision(text, self.skills.decision_schemas["puttwo"], self.skills)
+        parsed = parse_state(text, self.skills.state_schemas["puttwo"], self.skills)
         self.assertEqual(parsed["targets"][0]["location"], parsed["targets"][1]["location"])
         with self.assertRaises(ValueError):
-            parse_decision(text.replace(", {id: cup 2, location: countertop 1, status: available}", ""), self.skills.decision_schemas["puttwo"], self.skills)
+            parse_state(text.replace(", {id: cup 2, location: countertop 1, status: available}", ""), self.skills.state_schemas["puttwo"], self.skills)
 
     def test_search_list_rejects_more_than_64_entries(self):
-        text = self.put_decision().replace(
+        text = self.put_state().replace(
             "[countertop 1]",
             "[" + ", ".join(f"countertop {index}" for index in range(1, 66)) + "]",
             1,
         )
         with self.assertRaises(ValueError):
-            parse_decision(text, self.skills.decision_schemas["put"], self.skills)
+            parse_state(text, self.skills.state_schemas["put"], self.skills)
 
     def test_token_dfa_includes_closer_and_budget_reachability(self):
         fsm = regex_fsm(re.escape("look</action>"))
@@ -158,27 +173,27 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(self.tokenizer.decode(ids), "look</action>")
 
     def test_closed_receptacle_required_action_shadows_lower_rules(self):
-        decision = parse_decision(
-            self.put_decision(arrived_receptacle_state="closed"),
-            self.skills.decision_schemas["put"], self.skills,
+        state = parse_state(
+            self.put_state(arrived_receptacle_state="closed"),
+            self.skills.state_schemas["put"], self.skills,
         )
-        policy = compile_policy_language(decision, self.skills)
+        policy = compile_policy_language(state, self.skills)
         self.assertEqual(policy.required_action, "open countertop 1")
         self.assertIn("preserve_target_lexical_type", policy.shadowed)
         self.assertTrue(policy_satisfied("open countertop 1", policy))
         self.assertFalse(policy_satisfied("look", policy))
 
     def test_non_target_held_requires_put_down(self):
-        decision = parse_decision(
-            self.put_decision(held="mug 1", held_relation="non_target"),
-            self.skills.decision_schemas["put"], self.skills,
+        state = parse_state(
+            self.put_state(held="mug 1", held_relation="non_target"),
+            self.skills.state_schemas["put"], self.skills,
         )
-        policy = compile_policy_language(decision, self.skills)
+        policy = compile_policy_language(state, self.skills)
         self.assertEqual(policy.required_action, "move mug 1 to countertop 1")
 
     def test_take_type_preserves_cup_mug_distinction_and_repeat_is_removed(self):
-        decision = parse_decision(self.put_decision(), self.skills.decision_schemas["put"], self.skills)
-        policy = compile_policy_language(decision, self.skills)
+        state = parse_state(self.put_state(), self.skills.state_schemas["put"], self.skills)
+        policy = compile_policy_language(state, self.skills)
         self.assertTrue(policy.fsm.accepts("take cup 2 from cabinet 1</action>"))
         self.assertFalse(policy.fsm.accepts("take mug 2 from cabinet 1</action>"))
         self.assertFalse(policy.fsm.accepts("look</action>"))
@@ -186,9 +201,9 @@ class ConstraintTests(unittest.TestCase):
         self.assertTrue(action_grammar_valid("take mug 2 from cabinet 1", self.skills))
 
     def test_unbound_restriction_falls_back_to_generic_grammar(self):
-        decision = {"target_type": "cup 1", "previous_action": "none",
+        state = {"target_type": "cup 1", "previous_action": "none",
                     "arrived_receptacle_state": "unknown", "held_relation": "none"}
-        policy = compile_policy_language(decision, self.skills)
+        policy = compile_policy_language(state, self.skills)
         self.assertFalse(policy.evaluable)
         self.assertIn("unsatisfiable_policy_language", policy.fallback_reason)
         self.assertTrue(policy.fsm.accepts("look</action>"))

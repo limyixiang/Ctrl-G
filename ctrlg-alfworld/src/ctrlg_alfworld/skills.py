@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 ACTION_BLOCK_RE = re.compile(r"```action\s*\n(.*?)```", re.DOTALL)
-SCHEMA_BLOCK_RE = re.compile(r"```decision-schema\s*\n(.*?)```", re.DOTALL)
+SCHEMA_BLOCK_RE = re.compile(r"```state-schema\s*\n(.*?)```", re.DOTALL)
 POLICY_BLOCK_RE = re.compile(r"```policy\s*\n(.*?)```", re.DOTALL)
 PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}") # {obj} or {recep}
 PRECOND_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)(?:\((.*)\))?$")
@@ -64,7 +64,7 @@ class Action:
 
 
 @dataclass(frozen=True)
-class DecisionSchema:
+class StateSchema:
     task: str
     version: int
     fields: tuple[dict[str, Any], ...]
@@ -146,7 +146,7 @@ def _validate_task_schema_contract(task: str, fields: list[dict[str, Any]]) -> N
     if fields[0]["name"] != "task" or fields[0]["schema"] != {
         "type": "literal", "value": task
     }:
-        raise ValueError(f"decision schema {task!r} must start with its task literal")
+        raise ValueError(f"state schema {task!r} must start with its task literal")
     required = {
         "previous_action": "action",
         "arrived_receptacle_state": "enum",
@@ -154,15 +154,15 @@ def _validate_task_schema_contract(task: str, fields: list[dict[str, Any]]) -> N
     }
     for name, schema_type in required.items():
         if by_name.get(name, {}).get("type") != schema_type:
-            raise ValueError(f"decision schema {task!r} requires {name}: {schema_type}")
+            raise ValueError(f"state schema {task!r} requires {name}: {schema_type}")
     search = by_name.get("search", {})
     if search.get("type") != "record":
-        raise ValueError(f"decision schema {task!r} requires a search record")
+        raise ValueError(f"state schema {task!r} requires a search record")
     search_fields = {item["name"]: item["schema"] for item in search["fields"]}
     for name in ("locations_searched", "locations_to_search"):
         spec = search_fields.get(name, {})
         if spec.get("type") != "bounded_list" or spec.get("max_items") != 64:
-            raise ValueError(f"decision schema {task!r} requires {name} max_items: 64")
+            raise ValueError(f"state schema {task!r} requires {name} max_items: 64")
     if task == "puttwo":
         targets = by_name.get("targets", {})
         if (
@@ -214,7 +214,7 @@ def _validate_effect(effect: Any, action_names: set[str], path: str) -> None:
 @dataclass(frozen=True)
 class SkillSet:
     actions: tuple[Action, ...]
-    decision_schemas: dict[str, DecisionSchema]
+    state_schemas: dict[str, StateSchema]
     policies: tuple[PolicyRule, ...]
     raw_markdown: str
     schema_version: int = SCHEMA_VERSION
@@ -253,28 +253,28 @@ class SkillSet:
         if not actions:
             raise ValueError(f"No ```action blocks found in {path}")
 
-        schemas: dict[str, DecisionSchema] = {}
+        schemas: dict[str, StateSchema] = {}
         for index, block in enumerate(SCHEMA_BLOCK_RE.findall(raw)):
-            spec = _load_mapping(block, f"decision-schema[{index}]")
+            spec = _load_mapping(block, f"state-schema[{index}]")
             if set(spec) != {"version", "task", "fields"}:
                 raise ValueError(
-                    f"decision-schema[{index}] must contain version, task, and fields"
+                    f"state-schema[{index}] must contain version, task, and fields"
                 )
             if spec["version"] != SCHEMA_VERSION:
-                raise ValueError(f"unsupported decision schema version {spec['version']!r}")
+                raise ValueError(f"unsupported state schema version {spec['version']!r}")
             task = spec["task"]
             if not isinstance(task, str):
-                raise ValueError(f"decision-schema[{index}].task must be a string")
+                raise ValueError(f"state-schema[{index}].task must be a string")
             if task in schemas:
-                raise ValueError(f"duplicate decision schema {task!r}")
-            _validate_fields(spec["fields"], f"decision-schema[{task}].fields")
+                raise ValueError(f"duplicate state schema {task!r}")
+            _validate_fields(spec["fields"], f"state-schema[{task}].fields")
             _validate_task_schema_contract(task, spec["fields"])
-            schemas[task] = DecisionSchema(task, SCHEMA_VERSION, tuple(spec["fields"]))
+            schemas[task] = StateSchema(task, SCHEMA_VERSION, tuple(spec["fields"]))
         if not schemas:
-            raise ValueError(f"No ```decision-schema blocks found in {path}")
+            raise ValueError(f"No ```state-schema blocks found in {path}")
         if set(schemas) != TASK_KEYS:
             raise ValueError(
-                "decision schemas must define exactly: " + ", ".join(sorted(TASK_KEYS))
+                "state schemas must define exactly: " + ", ".join(sorted(TASK_KEYS))
             )
 
         policies: list[PolicyRule] = []
@@ -304,6 +304,6 @@ class SkillSet:
             raise ValueError(f"No ```policy blocks found in {path}")
         policies.sort(key=lambda rule: (-rule.priority, rule.name))
         return cls(
-            actions=tuple(actions), decision_schemas=schemas,
+            actions=tuple(actions), state_schemas=schemas,
             policies=tuple(policies), raw_markdown=raw,
         )

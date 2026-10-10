@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from .prompts import (
     ACTION_CLOSE,
     ACTION_OPEN,
-    DECISION_CLOSE,
-    DECISION_OPEN,
+    STATE_CLOSE,
+    STATE_OPEN,
     THINK_CLOSE,
     THINK_OPEN,
 )
@@ -24,8 +24,8 @@ from .prompts import (
 THINK_RE = re.compile(
     rf"{re.escape(THINK_OPEN)}(.*?){re.escape(THINK_CLOSE)}", re.DOTALL
 )
-DECISION_RE = re.compile(
-    rf"{re.escape(DECISION_OPEN)}(.*?){re.escape(DECISION_CLOSE)}", re.DOTALL
+STATE_RE = re.compile(
+    rf"{re.escape(STATE_OPEN)}(.*?){re.escape(STATE_CLOSE)}", re.DOTALL
 )
 ACTION_RE = re.compile(
     rf"{re.escape(ACTION_OPEN)}(.*?){re.escape(ACTION_CLOSE)}", re.DOTALL
@@ -37,11 +37,11 @@ class ParsedTurn:
     raw_head: str
     raw_tail: str
     thought: str
-    decision: str
+    state: str
     hmm_prefix_text: str
     action: str
     native_think_closed: bool
-    decision_format_ok: bool
+    state_format_ok: bool
     action_open_found: bool
     action_close_found: bool
     errors: tuple[str, ...] = field(default_factory=tuple)
@@ -70,13 +70,13 @@ class HeadGeneration:
 
     chunk: GeneratedChunk
     thought_chunk: GeneratedChunk
-    decision_chunk: GeneratedChunk | None
+    state_chunk: GeneratedChunk | None
     used_thought_repair: bool = False
-    used_decision_repair: bool = False
+    used_state_repair: bool = False
 
     @property
     def used_repair(self) -> bool:
-        return self.used_thought_repair or self.used_decision_repair
+        return self.used_thought_repair or self.used_state_repair
 
 
 @dataclass(frozen=True)
@@ -98,23 +98,23 @@ class TurnGeneration:
     tail_span_exact: bool = False
     head_seed: int | None = None
     tail_seed: int | None = None
-    decision_seed: int | None = None
+    state_seed: int | None = None
     thought_token_ids: tuple[int, ...] = ()
-    decision_token_ids: tuple[int, ...] = ()
+    state_token_ids: tuple[int, ...] = ()
     thought_latency_seconds: float = 0.0
-    decision_latency_seconds: float = 0.0
+    state_latency_seconds: float = 0.0
     thought_stop_found: bool = False
     thought_truncated: bool = False
-    decision_stop_found: bool = False
-    decision_truncated: bool = False
-    decision_attempts: int = 1
-    decision_retry_used: bool = False
-    decision_attempt_seeds: tuple[int, ...] = ()
-    decision_failure_reasons: tuple[str, ...] = ()
+    state_stop_found: bool = False
+    state_truncated: bool = False
+    state_attempts: int = 1
+    state_retry_used: bool = False
+    state_attempt_seeds: tuple[int, ...] = ()
+    state_failure_reasons: tuple[str, ...] = ()
     used_thought_repair: bool = False
-    used_decision_repair: bool = False
-    decision_schema_valid: bool = False
-    decision_fields: dict = field(default_factory=dict)
+    used_state_repair: bool = False
+    state_schema_valid: bool = False
+    state_fields: dict = field(default_factory=dict)
     action_grammar_valid: bool = False
     activated_policies: tuple[str, ...] = ()
     shadowed_policies: tuple[str, ...] = ()
@@ -131,7 +131,7 @@ class TurnGeneration:
         return self.head_latency_seconds + self.action_latency_seconds
 
 
-def parse_turn(raw_head: str, raw_tail: str, *, use_decision: bool) -> ParsedTurn:
+def parse_turn(raw_head: str, raw_tail: str, *, use_state: bool) -> ParsedTurn:
     """Parse the assembled three-phase generation without silently repairing it.
 
     ``raw_head`` ends at and includes ``<action>`` when generation followed the
@@ -175,15 +175,15 @@ def parse_turn(raw_head: str, raw_tail: str, *, use_decision: bool) -> ParsedTur
         hmm_prefix_text = raw_head[post_think_start:action_open_end]
         pre_action_text = raw_head[post_think_start:action_open_start]
 
-    decision_match = DECISION_RE.search(pre_action_text)
-    decision = decision_match.group(1).strip() if decision_match else ""
-    if use_decision:
-        decision_format_ok = decision_match is not None and bool(decision)
-        if not decision_format_ok:
-            errors.append("missing_or_empty_decision")
+    state_match = STATE_RE.search(pre_action_text)
+    state = state_match.group(1).strip() if state_match else ""
+    if use_state:
+        state_format_ok = state_match is not None and bool(state)
+        if not state_format_ok:
+            errors.append("missing_or_empty_state")
     else:
-        decision_format_ok = pre_action_text.strip() == ""
-        if not decision_format_ok:
+        state_format_ok = pre_action_text.strip() == ""
+        if not state_format_ok:
             errors.append("unexpected_pre_action_text")
 
     # Scope action parsing to the canonical opener after native thinking.
@@ -208,11 +208,11 @@ def parse_turn(raw_head: str, raw_tail: str, *, use_decision: bool) -> ParsedTur
         raw_head=raw_head,
         raw_tail=raw_tail,
         thought=thought,
-        decision=decision,
+        state=state,
         hmm_prefix_text=hmm_prefix_text,
         action=action,
         native_think_closed=native_think_closed,
-        decision_format_ok=decision_format_ok,
+        state_format_ok=state_format_ok,
         action_open_found=action_open_found,
         action_close_found=action_close_found,
         errors=tuple(errors),

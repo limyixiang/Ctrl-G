@@ -13,10 +13,10 @@ from .constraints import (
     HardDFALogitsProcessor,
     action_grammar_valid,
     compile_policy_language,
-    decision_span_pattern,
+    state_span_pattern,
     dfa_accepts,
     lift_character_fsm,
-    parse_decision,
+    parse_state,
     policy_satisfied,
     regex_fsm,
     tokenize_fixed_suffix,
@@ -33,8 +33,8 @@ from .generation import (
 from .prompts import (
     ACTION_CLOSE,
     ACTION_OPEN,
-    DECISION_CLOSE,
-    DECISION_OPEN,
+    STATE_CLOSE,
+    STATE_OPEN,
     THINK_CLOSE,
 )
 from .skills import SkillSet
@@ -70,7 +70,7 @@ class StopOnStrings:
 @dataclass
 class GenConfig:
     max_thought_tokens: int = 1024
-    max_decision_tokens: int = 512
+    max_state_tokens: int = 512
     max_action_tokens: int = 32
     min_action_tokens: int = 1
     beam_size: int = 1
@@ -79,8 +79,8 @@ class GenConfig:
     rollout_temperature: float = 0.7
     seed: int = 42
     max_hmm_prefix_tokens: int | None = None
-    decision_max_attempts: int = 5
-    decision_retry_temperature: float = 0.2
+    state_max_attempts: int = 5
+    state_retry_temperature: float = 0.2
 
 
 class StructuredOutputMismatchError(RuntimeError):
@@ -100,8 +100,8 @@ class StructuredOutputMismatchError(RuntimeError):
         )
 
 
-class DecisionGenerationExhausted(RuntimeError):
-    """All bounded vLLM decision attempts failed structural validation."""
+class StateGenerationExhausted(RuntimeError):
+    """All bounded vLLM state attempts failed structural validation."""
 
     def __init__(
         self,
@@ -114,7 +114,7 @@ class DecisionGenerationExhausted(RuntimeError):
         self.thought_seed = thought_seed
         self.attempt_records = attempt_records
         super().__init__(
-            f"decision generation exhausted {len(attempt_records)} attempts"
+            f"state generation exhausted {len(attempt_records)} attempts"
         )
 
 
@@ -163,9 +163,9 @@ class BaseBackend:
     def _assemble_head(
         self,
         thought: GeneratedChunk,
-        decision: GeneratedChunk | None,
+        state: GeneratedChunk | None,
         *,
-        use_decision: bool,
+        use_state: bool,
     ) -> HeadGeneration:
         """Add fixed phase delimiters while preserving exact continuation IDs."""
 
@@ -181,54 +181,54 @@ class BaseBackend:
         if used_thought_repair:
             append_fixed(THINK_CLOSE)
 
-        used_decision_repair = False
-        if use_decision:
-            if decision is None:
-                raise ValueError("decision generation is required in decision mode")
-            append_fixed(DECISION_OPEN)
-            before_decision = self.tokenizer.decode(
+        used_state_repair = False
+        if use_state:
+            if state is None:
+                raise ValueError("state generation is required in state mode")
+            append_fixed(STATE_OPEN)
+            before_state = self.tokenizer.decode(
                 token_ids, skip_special_tokens=False
             )
-            combined_ids = token_ids + list(decision.token_ids)
+            combined_ids = token_ids + list(state.token_ids)
             combined_text = self.tokenizer.decode(
                 combined_ids, skip_special_tokens=False
             )
-            if combined_text != before_decision + decision.text:
+            if combined_text != before_state + state.text:
                 raise ValueError(
-                    "decision token IDs are not compositional with the head"
+                    "state token IDs are not compositional with the head"
                 )
             token_ids = combined_ids
-            text += decision.text
-            used_decision_repair = not decision.stop_found
-            if used_decision_repair:
-                append_fixed(DECISION_CLOSE)
+            text += state.text
+            used_state_repair = not state.stop_found
+            if used_state_repair:
+                append_fixed(STATE_CLOSE)
 
         append_fixed(ACTION_OPEN)
         expected = self.tokenizer.decode(token_ids, skip_special_tokens=False)
         if expected != text:
             raise ValueError("assembled head text does not match its exact token IDs")
 
-        decision_stop_found = decision.stop_found if decision is not None else True
-        decision_truncated = decision.truncated if decision is not None else False
+        state_stop_found = state.stop_found if state is not None else True
+        state_truncated = state.truncated if state is not None else False
         return HeadGeneration(
             chunk=GeneratedChunk(
                 text=text,
                 token_ids=tuple(token_ids),
-                stop_found=thought.stop_found and decision_stop_found,
-                truncated=thought.truncated or decision_truncated,
+                stop_found=thought.stop_found and state_stop_found,
+                truncated=thought.truncated or state_truncated,
                 latency_seconds=(
                     thought.latency_seconds
-                    + (decision.latency_seconds if decision is not None else 0.0)
+                    + (state.latency_seconds if state is not None else 0.0)
                 ),
             ),
             thought_chunk=thought,
-            decision_chunk=decision,
+            state_chunk=state,
             used_thought_repair=used_thought_repair,
-            used_decision_repair=used_decision_repair,
+            used_state_repair=used_state_repair,
         )
 
     def _generate_head(
-        self, prompt_text: str, *, use_decision: bool, greedy: bool
+        self, prompt_text: str, *, use_state: bool, greedy: bool
     ) -> HeadGeneration:
         temperature = None if greedy else self.cfg.rollout_temperature
         thought = self._generate_until(
@@ -238,23 +238,23 @@ class BaseBackend:
             temperature,
         )
         thought_text = thought.text + (THINK_CLOSE if not thought.stop_found else "")
-        decision = None
-        if use_decision:
-            decision = self._generate_until(
-                prompt_text + thought_text + DECISION_OPEN,
-                [DECISION_CLOSE],
-                self.cfg.max_decision_tokens,
+        state = None
+        if use_state:
+            state = self._generate_until(
+                prompt_text + thought_text + STATE_OPEN,
+                [STATE_CLOSE],
+                self.cfg.max_state_tokens,
                 temperature,
             )
-        return self._assemble_head(thought, decision, use_decision=use_decision)
+        return self._assemble_head(thought, state, use_state=use_state)
 
     def generate_turn_unconstrained(
-        self, prompt_text: str, *, use_decision: bool, greedy: bool = False
+        self, prompt_text: str, *, use_state: bool, greedy: bool = False
     ) -> TurnGeneration:
         """Sample raw model data for evaluation controls or HMM distillation."""
 
         head = self._generate_head(
-            prompt_text, use_decision=use_decision, greedy=greedy
+            prompt_text, use_state=use_state, greedy=greedy
         )
         action_prompt = prompt_text + head.chunk.text
 
@@ -268,7 +268,7 @@ class BaseBackend:
         return self._assemble_unconstrained_turn(
             head,
             tail,
-            use_decision=use_decision,
+            use_state=use_state,
         )
 
     def generate_turns_unconstrained(
@@ -276,7 +276,7 @@ class BaseBackend:
         prompt_text: str,
         *,
         count: int,
-        use_decision: bool,
+        use_state: bool,
         greedy: bool = False,
         seed_context: tuple[int, ...] = (),
     ) -> list[TurnGeneration]:
@@ -286,7 +286,7 @@ class BaseBackend:
             raise ValueError("count must be at least one")
         return [
             self.generate_turn_unconstrained(
-                prompt_text, use_decision=use_decision, greedy=greedy
+                prompt_text, use_state=use_state, greedy=greedy
             )
             for _ in range(count)
         ]
@@ -296,15 +296,15 @@ class BaseBackend:
         head: HeadGeneration,
         tail: GeneratedChunk,
         *,
-        use_decision: bool,
+        use_state: bool,
         head_seed: int | None = None,
-        decision_seed: int | None = None,
+        state_seed: int | None = None,
         tail_seed: int | None = None,
     ) -> TurnGeneration:
         """Parse and retain the exact token spans from a head/tail pair."""
 
         parsed = parse_turn(
-            head.chunk.text, tail.text, use_decision=use_decision
+            head.chunk.text, tail.text, use_state=use_state
         )
 
         try:
@@ -344,34 +344,34 @@ class BaseBackend:
             tail_truncated=tail.truncated,
             tail_span_exact=tail_span_exact,
             head_seed=head_seed,
-            decision_seed=decision_seed,
+            state_seed=state_seed,
             tail_seed=tail_seed,
             thought_token_ids=head.thought_chunk.token_ids,
-            decision_token_ids=(
-                head.decision_chunk.token_ids
-                if head.decision_chunk is not None
+            state_token_ids=(
+                head.state_chunk.token_ids
+                if head.state_chunk is not None
                 else ()
             ),
             thought_latency_seconds=head.thought_chunk.latency_seconds,
-            decision_latency_seconds=(
-                head.decision_chunk.latency_seconds
-                if head.decision_chunk is not None
+            state_latency_seconds=(
+                head.state_chunk.latency_seconds
+                if head.state_chunk is not None
                 else 0.0
             ),
             thought_stop_found=head.thought_chunk.stop_found,
             thought_truncated=head.thought_chunk.truncated,
-            decision_stop_found=(
-                head.decision_chunk.stop_found
-                if head.decision_chunk is not None
+            state_stop_found=(
+                head.state_chunk.stop_found
+                if head.state_chunk is not None
                 else True
             ),
-            decision_truncated=(
-                head.decision_chunk.truncated
-                if head.decision_chunk is not None
+            state_truncated=(
+                head.state_chunk.truncated
+                if head.state_chunk is not None
                 else False
             ),
             used_thought_repair=head.used_thought_repair,
-            used_decision_repair=head.used_decision_repair,
+            used_state_repair=head.used_state_repair,
         )
 
 
@@ -505,7 +505,7 @@ class HFBackend(BaseBackend):
         from transformers import LogitsProcessorList
 
         if self.hmm_model is None:
-            raise ValueError("decision_ctrlg requires an action HMM checkpoint")
+            raise ValueError("state_ctrlg requires an action HMM checkpoint")
 
         _synchronize_if_cuda(self.device)
         started = time.perf_counter()
@@ -598,26 +598,26 @@ class HFBackend(BaseBackend):
             prompt_text, [THINK_CLOSE], self.cfg.max_thought_tokens, temperature
         )
         thought_text = thought.text + (THINK_CLOSE if not thought.stop_found else "")
-        decision_prompt = prompt_text + thought_text + DECISION_OPEN
+        state_prompt = prompt_text + thought_text + STATE_OPEN
         cache_key = (
             getattr(self.tokenizer, "name_or_path", type(self.tokenizer).__name__),
             skillset.content_sha256, task_key, self.vocab_size,
         )
-        if not hasattr(self, "_decision_dfa_cache"):
-            self._decision_dfa_cache = {}
-        graph = self._decision_dfa_cache.get(cache_key)
+        if not hasattr(self, "_state_dfa_cache"):
+            self._state_dfa_cache = {}
+        graph = self._state_dfa_cache.get(cache_key)
         if graph is None:
-            pattern = decision_span_pattern(skillset.decision_schemas[task_key], skillset)
+            pattern = state_span_pattern(skillset.state_schemas[task_key], skillset)
             graph = lift_character_fsm(regex_fsm(pattern), self.tokenizer, self.vocab_size)
-            self._decision_dfa_cache[cache_key] = graph
-        decision = self._generate_dfa_span(
-            decision_prompt,
+            self._state_dfa_cache[cache_key] = graph
+        state = self._generate_dfa_span(
+            state_prompt,
             graph,
-            stop_string=DECISION_CLOSE,
-            max_new_tokens=self.cfg.max_decision_tokens,
+            stop_string=STATE_CLOSE,
+            max_new_tokens=self.cfg.max_state_tokens,
             sample=not greedy,
         )
-        return self._assemble_head(thought, decision, use_decision=True)
+        return self._assemble_head(thought, state, use_state=True)
 
     def generate_turn(
         self,
@@ -632,17 +632,17 @@ class HFBackend(BaseBackend):
 
         if not constrained:
             return self.generate_turn_unconstrained(
-                prompt_text, use_decision=True, greedy=greedy_head
+                prompt_text, use_state=True, greedy=greedy_head
             )
         head = self._strict_head(prompt_text, skillset, task_key, greedy=greedy_head)
         action_prompt = prompt_text + head.chunk.text
 
-        decision_fields = parse_decision(
-            parse_turn(head.chunk.text, "x</action>", use_decision=True).decision,
-            skillset.decision_schemas[task_key],
+        state_fields = parse_state(
+            parse_turn(head.chunk.text, "x</action>", use_state=True).state,
+            skillset.state_schemas[task_key],
             skillset,
         )
-        policy = compile_policy_language(decision_fields, skillset)
+        policy = compile_policy_language(state_fields, skillset)
         if not hasattr(self, "_action_dfa_cache"):
             self._action_dfa_cache = OrderedDict()
         policy_key = (
@@ -667,8 +667,8 @@ class HFBackend(BaseBackend):
             prefix_ids = []
 
         # The HMM prefix begins after native thinking. A repaired thought close
-        # is therefore outside the HMM sequence, but a repaired decision close
-        # makes the decision/action prefix synthetic and cannot be used.
+        # is therefore outside the HMM sequence, but a repaired state close
+        # makes the state/action prefix synthetic and cannot be used.
         hmm_skip_reason = None
         if not prefix_ids:
             hmm_skip_reason = "missing_exact_hmm_prefix"
@@ -701,7 +701,7 @@ class HFBackend(BaseBackend):
         except ValueError:
             action_ids = []
 
-        parsed = parse_turn(head.chunk.text, raw_tail, use_decision=True)
+        parsed = parse_turn(head.chunk.text, raw_tail, use_state=True)
         if not policy.fsm.accepts(raw_tail):
             raise RuntimeError(
                 "token DFA output does not decode to the compiled policy language: "
@@ -724,33 +724,33 @@ class HFBackend(BaseBackend):
             tail_truncated=tail_truncated,
             tail_span_exact=tail_span_exact,
             thought_token_ids=head.thought_chunk.token_ids,
-            decision_token_ids=(
-                head.decision_chunk.token_ids
-                if head.decision_chunk is not None
+            state_token_ids=(
+                head.state_chunk.token_ids
+                if head.state_chunk is not None
                 else ()
             ),
             thought_latency_seconds=head.thought_chunk.latency_seconds,
-            decision_latency_seconds=(
-                head.decision_chunk.latency_seconds
-                if head.decision_chunk is not None
+            state_latency_seconds=(
+                head.state_chunk.latency_seconds
+                if head.state_chunk is not None
                 else 0.0
             ),
             thought_stop_found=head.thought_chunk.stop_found,
             thought_truncated=head.thought_chunk.truncated,
-            decision_stop_found=(
-                head.decision_chunk.stop_found
-                if head.decision_chunk is not None
+            state_stop_found=(
+                head.state_chunk.stop_found
+                if head.state_chunk is not None
                 else True
             ),
-            decision_truncated=(
-                head.decision_chunk.truncated
-                if head.decision_chunk is not None
+            state_truncated=(
+                head.state_chunk.truncated
+                if head.state_chunk is not None
                 else False
             ),
             used_thought_repair=head.used_thought_repair,
-            used_decision_repair=head.used_decision_repair,
-            decision_schema_valid=True,
-            decision_fields=decision_fields,
+            used_state_repair=head.used_state_repair,
+            state_schema_valid=True,
+            state_fields=state_fields,
             action_grammar_valid=action_grammar_valid(parsed.action, skillset),
             activated_policies=policy.activated,
             shadowed_policies=policy.shadowed,
@@ -768,7 +768,7 @@ class HFBackend(BaseBackend):
         count: int,
         seed_context: tuple[int, ...] = (),
     ) -> list[TurnGeneration]:
-        """Hard-schema decisions followed by unconstrained sampled actions."""
+        """Hard-schema states followed by unconstrained sampled actions."""
 
         turns = []
         for _ in range(count):
@@ -779,12 +779,12 @@ class HFBackend(BaseBackend):
                 self.cfg.max_action_tokens,
                 self.cfg.rollout_temperature,
             )
-            turn = self._assemble_unconstrained_turn(head, tail, use_decision=True)
-            fields = parse_decision(
-                turn.parsed.decision, skillset.decision_schemas[task_key], skillset
+            turn = self._assemble_unconstrained_turn(head, tail, use_state=True)
+            fields = parse_state(
+                turn.parsed.state, skillset.state_schemas[task_key], skillset
             )
             turns.append(TurnGeneration(
-                **{**turn.__dict__, "decision_schema_valid": True, "decision_fields": fields}
+                **{**turn.__dict__, "state_schema_valid": True, "state_fields": fields}
             ))
         return turns
 
@@ -943,11 +943,11 @@ class VLLMBackend(BaseBackend):
         prompt_text: str,
         *,
         count: int,
-        use_decision: bool,
+        use_state: bool,
         greedy: bool = False,
         seed_context: tuple[int, ...] = (),
     ) -> list[TurnGeneration]:
-        """Batch thought, decision, and action phases while preserving order."""
+        """Batch thought, state, and action phases while preserving order."""
 
         if count < 1:
             raise ValueError("count must be at least one")
@@ -958,9 +958,9 @@ class VLLMBackend(BaseBackend):
             )
             for candidate_index in range(count)
         ]
-        decision_seeds = [
+        state_seeds = [
             self._stable_seed(
-                self.cfg.seed, seed_context, candidate_index, "decision"
+                self.cfg.seed, seed_context, candidate_index, "state"
             )
             for candidate_index in range(count)
         ]
@@ -978,32 +978,32 @@ class VLLMBackend(BaseBackend):
             temperature,
             thought_seeds,
         )
-        if use_decision:
-            decision_prompts = [
+        if use_state:
+            state_prompts = [
                 prompt_text
                 + thought.text
                 + (THINK_CLOSE if not thought.stop_found else "")
-                + DECISION_OPEN
+                + STATE_OPEN
                 for thought in thoughts
             ]
-            decisions: list[GeneratedChunk | None] = list(
+            states: list[GeneratedChunk | None] = list(
                 self._generate_batch_until(
-                    decision_prompts,
-                    [DECISION_CLOSE],
-                    self.cfg.max_decision_tokens,
+                    state_prompts,
+                    [STATE_CLOSE],
+                    self.cfg.max_state_tokens,
                     temperature,
-                    decision_seeds,
+                    state_seeds,
                 )
             )
         else:
-            decisions = [None] * count
-            decision_seeds = [None] * count
+            states = [None] * count
+            state_seeds = [None] * count
 
         heads = [
             self._assemble_head(
-                thought, decision, use_decision=use_decision
+                thought, state, use_state=use_state
             )
-            for thought, decision in zip(thoughts, decisions)
+            for thought, state in zip(thoughts, states)
         ]
         action_prompts = [
             prompt_text + head.chunk.text for head in heads
@@ -1019,16 +1019,16 @@ class VLLMBackend(BaseBackend):
             self._assemble_unconstrained_turn(
                 head,
                 tail,
-                use_decision=use_decision,
+                use_state=use_state,
                 head_seed=thought_seed,
-                decision_seed=decision_seed,
+                state_seed=state_seed,
                 tail_seed=action_seed,
             )
-            for head, tail, thought_seed, decision_seed, action_seed in zip(
+            for head, tail, thought_seed, state_seed, action_seed in zip(
                 heads,
                 tails,
                 thought_seeds,
-                decision_seeds,
+                state_seeds,
                 action_seeds,
             )
         ]
@@ -1042,7 +1042,7 @@ class VLLMBackend(BaseBackend):
         count: int,
         seed_context: tuple[int, ...] = (),
     ) -> list[TurnGeneration]:
-        """Collect hard decisions with bounded retries, then sampled actions."""
+        """Collect hard states with bounded retries, then sampled actions."""
 
         if count < 1:
             raise ValueError("count must be at least one")
@@ -1060,36 +1060,36 @@ class VLLMBackend(BaseBackend):
             [prompt_text] * count, [THINK_CLOSE], self.cfg.max_thought_tokens,
             head_temperature, thought_seeds,
         )
-        decision_prompts = [
+        state_prompts = [
             prompt_text + thought.text
-            + (THINK_CLOSE if not thought.stop_found else "") + DECISION_OPEN
+            + (THINK_CLOSE if not thought.stop_found else "") + STATE_OPEN
             for thought in thoughts
         ]
-        pattern = decision_span_pattern(skillset.decision_schemas[task_key], skillset)
-        if self.cfg.decision_max_attempts < 1:
-            raise ValueError("decision_max_attempts must be at least one")
+        pattern = state_span_pattern(skillset.state_schemas[task_key], skillset)
+        if self.cfg.state_max_attempts < 1:
+            raise ValueError("state_max_attempts must be at least one")
         if (
-            self.cfg.decision_max_attempts > 1
-            and self.cfg.decision_retry_temperature <= 0
+            self.cfg.state_max_attempts > 1
+            and self.cfg.state_retry_temperature <= 0
         ):
             raise ValueError(
-                "decision_retry_temperature must be positive when retries are enabled"
+                "state_retry_temperature must be positive when retries are enabled"
             )
 
-        decisions = []
-        decision_seeds = []
-        decision_attempt_records = []
-        for candidate_index, (thought, thought_seed, decision_prompt) in enumerate(
-            zip(thoughts, thought_seeds, decision_prompts)
+        states = []
+        state_seeds = []
+        state_attempt_records = []
+        for candidate_index, (thought, thought_seed, state_prompt) in enumerate(
+            zip(thoughts, thought_seeds, state_prompts)
         ):
             failed_records = []
             attempt_seeds = []
-            decision = None
-            for attempt_index in range(self.cfg.decision_max_attempts):
+            state = None
+            for attempt_index in range(self.cfg.state_max_attempts):
                 phase = (
-                    "decision"
+                    "state"
                     if attempt_index == 0
-                    else f"decision_retry_{attempt_index}"
+                    else f"state_retry_{attempt_index}"
                 )
                 attempt_seed = self._stable_seed(
                     self.cfg.seed, seed_context, candidate_index, phase
@@ -1098,13 +1098,13 @@ class VLLMBackend(BaseBackend):
                 attempt_temperature = (
                     head_temperature
                     if attempt_index == 0
-                    else self.cfg.decision_retry_temperature
+                    else self.cfg.state_retry_temperature
                 )
                 try:
-                    decision = self._generate_until(
-                        decision_prompt,
-                        [DECISION_CLOSE],
-                        self.cfg.max_decision_tokens,
+                    state = self._generate_until(
+                        state_prompt,
+                        [STATE_CLOSE],
+                        self.cfg.max_state_tokens,
                         attempt_temperature,
                         seed=attempt_seed,
                         guided_regex=pattern,
@@ -1126,10 +1126,10 @@ class VLLMBackend(BaseBackend):
                     )
                     continue
                 try:
-                    decision_body = decision.text.split(DECISION_CLOSE, 1)[0].strip()
-                    parse_decision(
-                        decision_body,
-                        skillset.decision_schemas[task_key],
+                    state_body = state.text.split(STATE_CLOSE, 1)[0].strip()
+                    parse_state(
+                        state_body,
+                        skillset.state_schemas[task_key],
                         skillset,
                     )
                 except ValueError:
@@ -1142,39 +1142,39 @@ class VLLMBackend(BaseBackend):
                                 if attempt_temperature is None
                                 else attempt_temperature
                             ),
-                            "reason": "decision_parse_failure",
-                            "num_tokens": decision.num_tokens,
-                            "latency_seconds": decision.latency_seconds,
+                            "reason": "state_parse_failure",
+                            "num_tokens": state.num_tokens,
+                            "latency_seconds": state.latency_seconds,
                         }
                     )
-                    decision = None
+                    state = None
                     continue
                 break
 
-            if decision is None:
-                raise DecisionGenerationExhausted(
+            if state is None:
+                raise StateGenerationExhausted(
                     thought=thought,
                     thought_seed=thought_seed,
                     attempt_records=tuple(failed_records),
                 )
 
             # Latency metrics should include failed constrained attempts that
-            # preceded the accepted decision, while token IDs remain those of
+            # preceded the accepted state, while token IDs remain those of
             # the accepted span only.
             failed_latency = sum(
                 record["latency_seconds"] for record in failed_records
             )
             if failed_latency:
-                decision = GeneratedChunk(
-                    text=decision.text,
-                    token_ids=decision.token_ids,
-                    stop_found=decision.stop_found,
-                    truncated=decision.truncated,
-                    latency_seconds=decision.latency_seconds + failed_latency,
+                state = GeneratedChunk(
+                    text=state.text,
+                    token_ids=state.token_ids,
+                    stop_found=state.stop_found,
+                    truncated=state.truncated,
+                    latency_seconds=state.latency_seconds + failed_latency,
                 )
-            decisions.append(decision)
-            decision_seeds.append(attempt_seeds[-1])
-            decision_attempt_records.append(
+            states.append(state)
+            state_seeds.append(attempt_seeds[-1])
+            state_attempt_records.append(
                 {
                     "attempt_seeds": tuple(attempt_seeds),
                     "failure_reasons": tuple(
@@ -1183,40 +1183,40 @@ class VLLMBackend(BaseBackend):
                 }
             )
         heads = [
-            self._assemble_head(thought, decision, use_decision=True)
-            for thought, decision in zip(thoughts, decisions)
+            self._assemble_head(thought, state, use_state=True)
+            for thought, state in zip(thoughts, states)
         ]
         tails = self._generate_batch_until(
             [prompt_text + head.chunk.text for head in heads],
             [ACTION_CLOSE], self.cfg.max_action_tokens, action_temperature, action_seeds,
         )
         turns = []
-        for head, tail, thought_seed, decision_seed, action_seed, attempt_record in zip(
+        for head, tail, thought_seed, state_seed, action_seed, attempt_record in zip(
             heads,
             tails,
             thought_seeds,
-            decision_seeds,
+            state_seeds,
             action_seeds,
-            decision_attempt_records,
+            state_attempt_records,
         ):
             turn = self._assemble_unconstrained_turn(
-                head, tail, use_decision=True, head_seed=thought_seed,
-                decision_seed=decision_seed, tail_seed=action_seed,
+                head, tail, use_state=True, head_seed=thought_seed,
+                state_seed=state_seed, tail_seed=action_seed,
             )
-            fields = parse_decision(
-                turn.parsed.decision, skillset.decision_schemas[task_key], skillset
+            fields = parse_state(
+                turn.parsed.state, skillset.state_schemas[task_key], skillset
             )
             turns.append(TurnGeneration(
                 **{
                     **turn.__dict__,
-                    "decision_schema_valid": True,
-                    "decision_fields": fields,
-                    "decision_attempts": len(attempt_record["attempt_seeds"]),
-                    "decision_retry_used": bool(
+                    "state_schema_valid": True,
+                    "state_fields": fields,
+                    "state_attempts": len(attempt_record["attempt_seeds"]),
+                    "state_retry_used": bool(
                         attempt_record["failure_reasons"]
                     ),
-                    "decision_attempt_seeds": attempt_record["attempt_seeds"],
-                    "decision_failure_reasons": attempt_record[
+                    "state_attempt_seeds": attempt_record["attempt_seeds"],
+                    "state_failure_reasons": attempt_record[
                         "failure_reasons"
                     ],
                 }

@@ -1,4 +1,4 @@
-"""Report the matched HMM checkpoint's held-out decision-format fit."""
+"""Report the matched HMM checkpoint's held-out state-format fit."""
 
 import argparse
 import json
@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ctrlg import HMM
+from ctrlg_alfworld.prompts import PROMPT_FORMAT
 from ctrlg_alfworld.provenance import artifact_sha256, file_sha256, runtime_versions
 
 
@@ -36,23 +37,26 @@ def main():
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
+    metadata_path = Path(args.data_dir) / f"{args.dataset}.metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("prompt_format") != PROMPT_FORMAT:
+        raise ValueError(f"held-out data must use prompt_format {PROMPT_FORMAT!r}")
+
     model = HMM.from_pretrained(args.hmm, map_location="cpu").to(args.device)
     path = Path(args.data_dir) / f"{args.dataset}.dev"
     metrics = score(model, torch.load(path), args.batch_size)
     output = {
         "hmm": str(Path(args.hmm).resolve()),
         "hmm_sha256": artifact_sha256(args.hmm),
-        "prompt_format": "decision_with_persistent_history",
+        "prompt_format": PROMPT_FORMAT,
         "architecture": {
             "hidden_states": model.hidden_states,
             "vocab_size": model.vocab_size,
             "eos_token_id": model.eos_token_id,
         },
         "dataset_base": args.dataset,
-        "data_metadata": str(Path(args.data_dir) / f"{args.dataset}.metadata.json"),
-        "data_metadata_sha256": file_sha256(
-            Path(args.data_dir) / f"{args.dataset}.metadata.json"
-        ),
+        "data_metadata": str(metadata_path),
+        "data_metadata_sha256": file_sha256(metadata_path),
         "runtime": runtime_versions(),
         "held_out_fit": {"data": str(path), **metrics},
     }

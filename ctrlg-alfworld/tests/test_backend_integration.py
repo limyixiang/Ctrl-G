@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from ctrlg_alfworld.backends import (
     BaseBackend,
-    DecisionGenerationExhausted,
+    StateGenerationExhausted,
     GenConfig,
     HFBackend,
     StructuredOutputMismatchError,
@@ -43,7 +43,7 @@ def chunk(text, tokenizer, stop=True):
     )
 
 
-DECISION = (
+STATE = (
     "{task: put, target_type: cup, target_id: unknown, target_location: unknown, "
     "held: none, at: countertop 1, dest: unknown, previous_action: look, "
     "arrived_receptacle_state: open, held_relation: none, search: "
@@ -66,27 +66,32 @@ class BackendIntegrationTests(unittest.TestCase):
             backend, "prompt", self.skills, "put", constrained=False
         ), sentinel)
 
-    def test_strict_head_builds_and_uses_hard_decision_dfa(self):
+    def test_strict_head_builds_and_uses_hard_state_dfa(self):
         tokenizer = CharacterTokenizer()
         backend = object.__new__(HFBackend)
         backend.tokenizer = tokenizer
         backend.vocab_size = len(tokenizer)
-        backend.cfg = GenConfig(max_decision_tokens=512)
+        backend.cfg = GenConfig(max_state_tokens=512)
         backend._generate_until = lambda *args, **kwargs: chunk("reason</think>", tokenizer)
         captured = {}
 
         def generate(prompt, graph, **kwargs):
             captured.update(kwargs)
-            ids = tokenizer.encode(DECISION + "</decision>")
+            self.assertTrue(prompt.endswith("<state>"))
+            ids = tokenizer.encode(STATE + "</state>")
             from ctrlg_alfworld.constraints import dfa_accepts
             self.assertTrue(dfa_accepts(graph, ids))
-            return chunk(DECISION + "</decision>", tokenizer)
+            self.assertFalse(dfa_accepts(graph, tokenizer.encode(STATE + "</decision>")))
+            return chunk(STATE + "</state>", tokenizer)
 
         backend._generate_dfa_span = generate
         head = backend._strict_head("P", self.skills, "put", greedy=True)
-        self.assertIn("</decision>", head.chunk.text)
-        self.assertEqual(captured["stop_string"], "</decision>")
+        self.assertIn("</state>", head.chunk.text)
+        self.assertEqual(captured["stop_string"], "</state>")
         self.assertEqual(captured["max_new_tokens"], 512)
+        self.assertEqual(
+            head.chunk.text, "reason</think><state>" + STATE + "</state><action>"
+        )
 
     def test_strict_condition_uses_policy_dfa_and_hmm_without_oracle_actions(self):
         tokenizer = CharacterTokenizer()
@@ -97,8 +102,8 @@ class BackendIntegrationTests(unittest.TestCase):
         backend.device = "cpu"
         backend.cfg = GenConfig(max_action_tokens=32)
         thought = chunk("reason</think>", tokenizer)
-        decision = chunk(DECISION + "</decision>", tokenizer)
-        head = BaseBackend._assemble_head(backend, thought, decision, use_decision=True)
+        state = chunk(STATE + "</state>", tokenizer)
+        head = BaseBackend._assemble_head(backend, thought, state, use_state=True)
         backend._strict_head = lambda *args, **kwargs: head
         seen = {}
 
@@ -111,11 +116,14 @@ class BackendIntegrationTests(unittest.TestCase):
         turn = HFBackend.generate_turn(
             backend, "P", self.skills, "put", constrained=True
         )
-        self.assertTrue(turn.decision_schema_valid)
+        self.assertTrue(turn.state_schema_valid)
         self.assertTrue(turn.action_grammar_valid)
         self.assertTrue(turn.hmm_applied)
         self.assertIn("preserve_target_lexical_type", turn.activated_policies)
         self.assertEqual(turn.parsed.action, "inventory")
+        self.assertEqual(
+            tokenizer.decode(seen["prefix"]), "<state>" + STATE + "</state><action>"
+        )
         self.assertNotIn("admissible", repr(seen))
 
     def test_hmm_skips_reranking_when_only_one_policy_action_remains(self):
@@ -223,27 +231,27 @@ class BackendIntegrationTests(unittest.TestCase):
             ("a", 31, "regex"), ("b", 32, "regex"), ("c", 33, "regex")
         ])
 
-    def test_vllm_training_retries_failed_decision_with_distinct_seeds(self):
+    def test_vllm_training_retries_failed_state_with_distinct_seeds(self):
         tokenizer = CharacterTokenizer()
         backend = object.__new__(VLLMBackend)
         backend.tokenizer = tokenizer
         backend.cfg = GenConfig(
-            max_decision_tokens=512,
+            max_state_tokens=512,
             max_action_tokens=32,
             seed=17,
-            decision_max_attempts=5,
-            decision_retry_temperature=0.2,
+            state_max_attempts=5,
+            state_retry_temperature=0.2,
         )
-        decision_calls = []
+        state_calls = []
 
         def generate(prompt, stops, cap, temperature, *, seed, guided_regex=None):
             if guided_regex is not None:
-                decision_calls.append((temperature, seed))
-                if len(decision_calls) < 3:
+                state_calls.append((temperature, seed))
+                if len(state_calls) < 3:
                     raise StructuredOutputMismatchError(
                         chunk("repeated", tokenizer, stop=False)
                     )
-                return chunk(DECISION + "</decision>", tokenizer)
+                return chunk(STATE + "</state>", tokenizer)
             if stops == ["</think>"]:
                 return chunk("reason</think>", tokenizer)
             return chunk("look</action>", tokenizer)
@@ -254,17 +262,17 @@ class BackendIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(len(turns), 1)
-        self.assertEqual(turns[0].decision_attempts, 3)
-        self.assertTrue(turns[0].decision_retry_used)
+        self.assertEqual(turns[0].state_attempts, 3)
+        self.assertTrue(turns[0].state_retry_used)
         self.assertEqual(
-            turns[0].decision_failure_reasons,
+            turns[0].state_failure_reasons,
             ("max_tokens_before_accept", "max_tokens_before_accept"),
         )
-        self.assertEqual([item[0] for item in decision_calls], [None, 0.2, 0.2])
-        self.assertEqual(len(set(item[1] for item in decision_calls)), 3)
+        self.assertEqual([item[0] for item in state_calls], [None, 0.2, 0.2])
+        self.assertEqual(len(set(item[1] for item in state_calls)), 3)
         self.assertEqual(
-            turns[0].decision_attempt_seeds,
-            tuple(item[1] for item in decision_calls),
+            turns[0].state_attempt_seeds,
+            tuple(item[1] for item in state_calls),
         )
 
     def test_vllm_training_raises_typed_failure_after_bounded_attempts(self):
@@ -273,8 +281,8 @@ class BackendIntegrationTests(unittest.TestCase):
         backend.tokenizer = tokenizer
         backend.cfg = GenConfig(
             seed=19,
-            decision_max_attempts=3,
-            decision_retry_temperature=0.2,
+            state_max_attempts=3,
+            state_retry_temperature=0.2,
         )
 
         def generate(prompt, stops, cap, temperature, *, seed, guided_regex=None):
@@ -285,7 +293,7 @@ class BackendIntegrationTests(unittest.TestCase):
             return chunk("reason</think>", tokenizer)
 
         backend._generate_until = generate
-        with self.assertRaises(DecisionGenerationExhausted) as caught:
+        with self.assertRaises(StateGenerationExhausted) as caught:
             backend.generate_turns_training(
                 "prompt", self.skills, "put", count=1, seed_context=(4, 5, 0)
             )

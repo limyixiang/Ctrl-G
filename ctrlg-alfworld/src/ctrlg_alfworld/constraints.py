@@ -1,7 +1,7 @@
 """Regular-language compilation and hard token-DFA decoding.
 
 The languages in this module depend only on ``SKILLS.md`` and on values the
-model emitted in its decision block. Environment admissible commands are never
+model emitted in its state block. Environment admissible commands are never
 an input to these compilers.
 """
 
@@ -18,8 +18,8 @@ import numpy as np
 import yaml
 from interegular.fsm import anything_else
 
-from .prompts import ACTION_CLOSE, DECISION_CLOSE
-from .skills import DecisionSchema, PLACEHOLDER_RE, PolicyRule, SkillSet
+from .prompts import ACTION_CLOSE, STATE_CLOSE
+from .skills import StateSchema, PLACEHOLDER_RE, PolicyRule, SkillSet
 
 ATOM_PATTERN = r"[a-z]+"
 ENTITY_PATTERN = r"[a-z]+ [1-9][0-9]*"
@@ -105,12 +105,12 @@ def _fields_pattern(fields: Sequence[dict[str, Any]], skillset: SkillSet) -> str
     return r"\{" + ", ".join(pairs) + r"\}"
 
 
-def decision_body_pattern(schema: DecisionSchema, skillset: SkillSet) -> str:
+def state_body_pattern(schema: StateSchema, skillset: SkillSet) -> str:
     return _fields_pattern(schema.fields, skillset)
 
 
-def decision_span_pattern(schema: DecisionSchema, skillset: SkillSet) -> str:
-    return decision_body_pattern(schema, skillset) + _literal(DECISION_CLOSE)
+def state_span_pattern(schema: StateSchema, skillset: SkillSet) -> str:
+    return state_body_pattern(schema, skillset) + _literal(STATE_CLOSE)
 
 
 def action_span_pattern(skillset: SkillSet, *, take_type: str | None = None) -> str:
@@ -397,17 +397,17 @@ class HardDFALogitsProcessor:
         return masked
 
 
-def parse_decision(decision_text: str, schema: DecisionSchema, skillset: SkillSet) -> dict[str, Any]:
-    if re.fullmatch(decision_body_pattern(schema, skillset), decision_text) is None:
-        raise ValueError(f"decision does not match the {schema.task!r} schema")
-    value = yaml.safe_load(decision_text)
+def parse_state(state_text: str, schema: StateSchema, skillset: SkillSet) -> dict[str, Any]:
+    if re.fullmatch(state_body_pattern(schema, skillset), state_text) is None:
+        raise ValueError(f"state does not match the {schema.task!r} schema")
+    value = yaml.safe_load(state_text)
     if not isinstance(value, dict):
-        raise ValueError("decision is not a mapping")
+        raise ValueError("state is not a mapping")
     return value
 
 
-def _condition_matches(condition: dict[str, Any], decision: dict[str, Any]) -> bool:
-    value = decision.get(condition["field"])
+def _condition_matches(condition: dict[str, Any], state: dict[str, Any]) -> bool:
+    value = state.get(condition["field"])
     if "equals" in condition:
         return value == condition["equals"]
     if "not_in" in condition:
@@ -430,7 +430,7 @@ class PolicyCompilation:
     take_type: str | None = None
 
 
-def _bind_required_action(rule: PolicyRule, decision: dict[str, Any], skillset: SkillSet) -> str:
+def _bind_required_action(rule: PolicyRule, state: dict[str, Any], skillset: SkillSet) -> str:
     spec = rule.effect["require_action"]
     action_template = next(
         action for action in skillset.actions if action.name == spec["action"]
@@ -439,7 +439,7 @@ def _bind_required_action(rule: PolicyRule, decision: dict[str, Any], skillset: 
     for placeholder, field_name in spec["bindings"].items():
         if placeholder not in action_template.placeholders:
             raise ValueError(f"policy {rule.name} binds unknown placeholder {placeholder}")
-        value = decision.get(field_name)
+        value = state.get(field_name)
         if not isinstance(value, str) or re.fullmatch(ENTITY_PATTERN, value) is None:
             raise ValueError(f"policy {rule.name} cannot bind {field_name!r}")
         values[placeholder] = value
@@ -448,19 +448,19 @@ def _bind_required_action(rule: PolicyRule, decision: dict[str, Any], skillset: 
     return action_template.template.format(**values)
 
 
-def compile_policy_language(decision: dict[str, Any], skillset: SkillSet) -> PolicyCompilation:
+def compile_policy_language(state: dict[str, Any], skillset: SkillSet) -> PolicyCompilation:
     generic_pattern = action_span_pattern(skillset)
     generic_fsm = regex_fsm(generic_pattern)
     matching = [
         rule for rule in skillset.policies
-        if all(_condition_matches(condition, decision) for condition in rule.when)
+        if all(_condition_matches(condition, state) for condition in rule.when)
     ]
     required = [rule for rule in matching if "require_action" in rule.effect]
     if required:
         winner = required[0]
         shadowed = tuple(rule.name for rule in matching if rule is not winner and rule.priority < winner.priority)
         try:
-            action = _bind_required_action(winner, decision, skillset)
+            action = _bind_required_action(winner, state, skillset)
             pattern = _literal(action + ACTION_CLOSE)
             fsm = regex_fsm(pattern)
             if (fsm & generic_fsm).empty():
@@ -483,13 +483,13 @@ def compile_policy_language(decision: dict[str, Any], skillset: SkillSet) -> Pol
         for rule in matching:
             if "restrict_take_type" in rule.effect:
                 field_name = rule.effect["restrict_take_type"]["field"]
-                value = decision.get(field_name)
+                value = state.get(field_name)
                 if not isinstance(value, str) or re.fullmatch(ATOM_PATTERN, value) is None:
                     raise ValueError(f"policy {rule.name} cannot bind {field_name!r}")
                 take_type = value
             elif "forbid_exact_action" in rule.effect:
                 field_name = rule.effect["forbid_exact_action"]["field"]
-                value = decision.get(field_name)
+                value = state.get(field_name)
                 if not isinstance(value, str):
                     raise ValueError(f"policy {rule.name} cannot bind {field_name!r}")
                 forbidden = value

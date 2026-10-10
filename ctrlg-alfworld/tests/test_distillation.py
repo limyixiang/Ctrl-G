@@ -18,22 +18,22 @@ from ctrlg_alfworld.distillation import (
 )
 
 
-def make_record(use_decision, marker):
+def make_record(use_state, marker):
     prefix = [10, marker]
     tail = [20, 21]
     eos = 0
     return {
-        "use_decision": use_decision,
+        "use_state": use_state,
         "schema_version": 1,
         "policy_version": 1,
-        "constrained_decision_collection": True,
+        "constrained_state_collection": True,
         "no_oracle_filtering": True,
         "skills_sha256": "skills",
         "model": "model",
         "tokenizer": "model",
-        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
-        "decision_max_attempts": 5,
-        "decision_retry_temperature": 0.2,
+        "prompt_format": "state_with_persistent_history_no_oracle_v1",
+        "state_max_attempts": 5,
+        "state_retry_temperature": 0.2,
         "prompt_token_ids": [1, 2],
         "head_token_ids": [3, 4] + prefix,
         "hmm_prefix_token_ids": prefix,
@@ -42,8 +42,8 @@ def make_record(use_decision, marker):
         "raw_tail": "look</action>",
         "tail_span_exact": True,
         "head_truncated": False,
-        "decision_truncated": False,
-        "used_decision_repair": False,
+        "state_truncated": False,
+        "used_state_repair": False,
         "tail_truncated": False,
     }
 
@@ -176,7 +176,7 @@ class DistillationDataTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "more than one turn"):
                 load_advance_selections(episodes_path)
 
-    def test_advance_trace_skips_terminal_decision_failure(self):
+    def test_advance_trace_skips_terminal_state_failure(self):
         episodes = [
             {
                 "episode": 0,
@@ -185,7 +185,7 @@ class DistillationDataTests(unittest.TestCase):
                         "step": 0,
                         "sample": None,
                         "failed_sample": 0,
-                        "termination_reason": "decision_generation_exhausted",
+                        "termination_reason": "state_generation_exhausted",
                         "action": "",
                     }
                 ],
@@ -257,12 +257,12 @@ class DistillationDataTests(unittest.TestCase):
         record["thought_truncated"] = True
         validate_record(record)
 
-    def test_validate_record_rejects_truncated_decision(self):
+    def test_validate_record_rejects_truncated_state(self):
         record = make_record(True, 11)
         record["head_truncated"] = True
-        record["decision_truncated"] = True
-        record["used_decision_repair"] = True
-        with self.assertRaisesRegex(ValueError, "decision span"):
+        record["state_truncated"] = True
+        record["used_state_repair"] = True
+        with self.assertRaisesRegex(ValueError, "state span"):
             validate_record(record)
 
     def test_validate_record_rejects_extra_tokens_after_eos(self):
@@ -282,8 +282,8 @@ class DistillationDataTests(unittest.TestCase):
     def test_split_keeps_samples_from_one_state_together(self):
         records = []
         for episode in range(4):
-            for use_decision in (False, True):
-                record = make_record(use_decision, 20 + episode)
+            for use_state in (False, True):
+                record = make_record(use_state, 20 + episode)
                 record.update({"episode": episode, "step": 0})
                 records.append(record)
         train, dev = split_records(records, dev_fraction=0.25, seed=5)
@@ -298,6 +298,20 @@ class DistillationDataTests(unittest.TestCase):
         records[1]["policy_version"] = 2
         with self.assertRaisesRegex(ValueError, "policy_version"):
             validate_prompt_regime(records)
+
+    def test_legacy_prompt_format_is_rejected_even_with_state_keys(self):
+        record = make_record(True, 11)
+        record["prompt_format"] = "decision_with_persistent_history_no_oracle_v1"
+        with self.assertRaisesRegex(ValueError, "prompt_format"):
+            validate_prompt_regime([record])
+
+    def test_legacy_record_keys_are_rejected(self):
+        record = make_record(True, 11)
+        record["use_decision"] = record.pop("use_state")
+        record["decision_truncated"] = record.pop("state_truncated")
+        record["used_decision_repair"] = record.pop("used_state_repair")
+        with self.assertRaisesRegex(ValueError, "missing fields: use_state"):
+            validate_record(record)
 
     def test_missing_collection_provenance_is_rejected(self):
         record = make_record(True, 11)

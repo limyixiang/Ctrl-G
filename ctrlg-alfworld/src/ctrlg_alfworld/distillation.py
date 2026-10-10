@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from .prompts import ACTION_CLOSE, ACTION_OPEN, DECISION_CLOSE, DECISION_OPEN
+from .prompts import ACTION_CLOSE, ACTION_OPEN, PROMPT_FORMAT, STATE_CLOSE, STATE_OPEN
 
 
 SampleKey = tuple[int, int, int]
@@ -98,7 +98,7 @@ def validate_tokenizer_contract(tokenizer, records: list[dict]) -> None:
         )
 
     added_vocab = tokenizer.get_added_vocab() if hasattr(tokenizer, "get_added_vocab") else {}
-    tags = {ACTION_OPEN, ACTION_CLOSE, DECISION_OPEN, DECISION_CLOSE}
+    tags = {ACTION_OPEN, ACTION_CLOSE, STATE_OPEN, STATE_CLOSE}
     collisions = sorted(tag for tag in tags if tag in added_vocab)
     if collisions:
         raise ValueError(
@@ -186,16 +186,16 @@ def load_eligible_records(
 
 
 def validate_prompt_regime(records: list[dict]) -> dict:
-    """Validate the no-oracle, constrained-decision collection provenance."""
+    """Validate the no-oracle, constrained-state collection provenance."""
 
     if not records:
         raise ValueError("at least one record is required to validate prompt regime")
     fields = (
-        "schema_version", "policy_version", "constrained_decision_collection",
+        "schema_version", "policy_version", "constrained_state_collection",
         "no_oracle_filtering", "skills_sha256",
         "model", "tokenizer",
         "prompt_format",
-        "decision_max_attempts", "decision_retry_temperature",
+        "state_max_attempts", "state_retry_temperature",
     )
     result = {}
     for field in fields:
@@ -203,8 +203,10 @@ def validate_prompt_regime(records: list[dict]) -> dict:
         if len(values) != 1 or None in values:
             raise ValueError(f"records do not share one {field}")
         result[field] = values.pop()
-    if result["constrained_decision_collection"] is not True:
-        raise ValueError("HMM samples must use hard-DFA decision collection")
+    if result["prompt_format"] != PROMPT_FORMAT:
+        raise ValueError(f"HMM samples must use prompt_format {PROMPT_FORMAT!r}")
+    if result["constrained_state_collection"] is not True:
+        raise ValueError("HMM samples must use hard-DFA state collection")
     if result["no_oracle_filtering"] is not True:
         raise ValueError("HMM samples must not be filtered by the environment oracle")
     return result
@@ -212,7 +214,7 @@ def validate_prompt_regime(records: list[dict]) -> dict:
 
 def validate_record(record: dict, *, source: str = "record") -> None:
     required = (
-        "use_decision",
+        "use_state",
         "prompt_token_ids",
         "head_token_ids",
         "hmm_prefix_token_ids",
@@ -221,8 +223,8 @@ def validate_record(record: dict, *, source: str = "record") -> None:
         "raw_tail",
         "tail_span_exact",
         "head_truncated",
-        "decision_truncated",
-        "used_decision_repair",
+        "state_truncated",
+        "used_state_repair",
         "tail_truncated",
     )
     missing = [key for key in required if key not in record]
@@ -235,9 +237,9 @@ def validate_record(record: dict, *, source: str = "record") -> None:
     sequence = list(record["hmm_sequence_token_ids"])
     if not prefix:
         raise ValueError(f"{source} has an empty HMM prefix")
-    if record["decision_truncated"] or record["used_decision_repair"]:
+    if record["state_truncated"] or record["used_state_repair"]:
         raise ValueError(
-            f"{source} contains a truncated or repaired decision span"
+            f"{source} contains a truncated or repaired state span"
         )
     if record["tail_truncated"]:
         raise ValueError(f"{source} contains a truncated action span")

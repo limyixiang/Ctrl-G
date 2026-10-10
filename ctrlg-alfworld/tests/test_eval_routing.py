@@ -21,15 +21,15 @@ class EvalRoutingTests(unittest.TestCase):
 
     def test_prompt_condition_uses_no_hmm(self):
         self.assertIsNone(run_eval.resolve_hmm_path(
-            get_condition("decision_prompt"), hmm="checkpoint"
+            get_condition("state_prompt"), hmm="checkpoint"
         ))
 
     def test_ctrlg_requires_hmm(self):
         self.assertEqual(run_eval.resolve_hmm_path(
-            get_condition("decision_ctrlg"), hmm="checkpoint"
+            get_condition("state_ctrlg"), hmm="checkpoint"
         ), "checkpoint")
         with self.assertRaisesRegex(ValueError, "requires --hmm"):
-            run_eval.resolve_hmm_path(get_condition("decision_ctrlg"), hmm=None)
+            run_eval.resolve_hmm_path(get_condition("state_ctrlg"), hmm=None)
 
     def test_hmm_provenance_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -41,10 +41,10 @@ class EvalRoutingTests(unittest.TestCase):
                 "schema_version": self.skills.schema_version,
                 "policy_version": self.skills.policy_version,
                 "no_oracle_filtering": True,
-                "constrained_decision_collection": True,
+                "constrained_state_collection": True,
                 "model": "model-a",
                 "tokenizer": "model-a",
-                "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+                "prompt_format": "state_with_persistent_history_no_oracle_v1",
             }
             path = root / run_eval.HMM_TRAINING_METADATA
             path.write_text(json.dumps(metadata))
@@ -56,6 +56,12 @@ class EvalRoutingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "model"):
                 run_eval.validate_hmm_provenance(
                     str(checkpoint), skillset=self.skills, model="model-b"
+                )
+            metadata["prompt_format"] = "decision_with_persistent_history_no_oracle_v1"
+            path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "prompt_format"):
+                run_eval.validate_hmm_provenance(
+                    str(checkpoint), skillset=self.skills, model="model-a"
                 )
 
     def test_missing_provenance_is_rejected(self):

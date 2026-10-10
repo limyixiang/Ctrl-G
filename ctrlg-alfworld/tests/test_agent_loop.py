@@ -15,7 +15,7 @@ class CharacterTokenizer:
         return "\n".join(message["content"] for message in messages) + "\n<think>"
 
 
-DECISION = (
+STATE = (
     "{task: put, target_type: cup, target_id: unknown, target_location: unknown, "
     "held: none, at: countertop 1, dest: unknown, previous_action: none, "
     "arrived_receptacle_state: open, held_relation: none, search: "
@@ -32,9 +32,9 @@ class FakeBackend:
     def generate_turn(self, prompt_text, skillset, task_key, *, constrained, greedy_head):
         self.calls.append((task_key, constrained, skillset.content_sha256))
         self.prompt_texts.append(prompt_text)
-        head = f"choose</think><decision>{DECISION}</decision><action>"
+        head = f"choose</think><state>{STATE}</state><action>"
         tail = "look</action>"
-        parsed = parse_turn(head, tail, use_decision=True)
+        parsed = parse_turn(head, tail, use_state=True)
         return TurnGeneration(
             parsed=parsed,
             head_token_ids=tuple(self.tokenizer.encode(head)),
@@ -42,8 +42,8 @@ class FakeBackend:
             tail_token_ids=tuple(self.tokenizer.encode(tail)),
             hmm_prefix_token_ids=tuple(self.tokenizer.encode(parsed.hmm_prefix_text)),
             head_latency_seconds=0.01, action_latency_seconds=0.02,
-            decision_schema_valid=constrained,
-            decision_fields={},
+            state_schema_valid=constrained,
+            state_fields={},
             action_grammar_valid=constrained,
             policy_evaluable=constrained,
             policy_satisfied=constrained,
@@ -89,11 +89,16 @@ class AgentLoopTests(unittest.TestCase):
             condition = get_condition(name)
             self.assertTrue(record.success)
             self.assertEqual(record.task_description, "look around")
-            self.assertEqual(backend.calls[0][0:2], ("put", condition.use_decision_dfa))
+            self.assertEqual(backend.calls[0][0:2], ("put", condition.use_state_dfa))
             self.assertNotIn("look", repr(backend.calls[0]))
             self.assertNotIn("Your admissible actions", backend.prompt_texts[0])
             self.assertEqual(record.steps[0].admissible_gt, ["look", "go to countertop 1"])
             self.assertTrue(record.steps[0].action_was_admissible)
+            saved = record.to_dict()["steps"][0]
+            self.assertEqual(saved["state"], STATE)
+            self.assertTrue(saved["state_schema_valid"])
+            self.assertNotIn("decision", saved)
+            self.assertNotIn("decision_fields", saved)
             prompts.append(backend.prompt_texts[0])
         self.assertEqual(prompts[0].encode(), prompts[1].encode())
 

@@ -30,11 +30,11 @@ OUTPUT=${OUTPUT:-results/alfworld/pair_${SLURM_ARRAY_JOB_ID}}
 EPISODES=${EPISODES:-134}
 BEAM_SIZE=${BEAM_SIZE:-1}
 SEED=${SEED:-42}
-CONDITIONS=(decision_prompt decision_ctrlg)
+CONDITIONS=(state_prompt state_ctrlg)
 CONDITION=${CONDITIONS[$SLURM_ARRAY_TASK_ID]}
 HMM_ARGS=()
-if [[ "$CONDITION" == "decision_ctrlg" ]]; then
-  : "${HMM:?Set HMM to the matched decision-format checkpoint directory}"
+if [[ "$CONDITION" == "state_ctrlg" ]]; then
+  : "${HMM:?Set HMM to the matched state-format checkpoint directory}"
   HMM_ARGS=(--hmm "$HMM")
 fi
 

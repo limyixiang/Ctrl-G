@@ -5,4 +5,4 @@ Below are all {history_length} trajectory steps taken since that observation:
 You are now at step {current_step} and your current observation is: {current_observation}
 Now it's your turn to take an action.
 Choose the next action that makes progress on the task. The environment will execute the raw action you generate.
-{decision_instruction}
+{state_instruction}

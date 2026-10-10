@@ -19,7 +19,7 @@ files = [
 ]
 
 expected = re.compile(
-    r"^\s*<decision>\{[^\r\n]*\}</decision>\s*"
+    r"^\s*<state>\{[^\r\n]*\}</state>\s*"
     r"<action>.+</action>\s*$"
 )
 

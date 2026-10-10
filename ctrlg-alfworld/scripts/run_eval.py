@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ctrlg_alfworld import SkillSet, run_episode
 from ctrlg_alfworld.backends import GenConfig, HFBackend
 from ctrlg_alfworld.experiment import condition_choices, get_condition
+from ctrlg_alfworld.prompts import PROMPT_FORMAT
 from ctrlg_alfworld.provenance import (
     artifact_sha256,
     file_sha256,
@@ -32,7 +33,7 @@ def resolve_hmm_path(
     *,
     hmm: str | None,
 ) -> str | None:
-    """Require the matched decision-format HMM only for its treatment cell."""
+    """Require the matched state-format HMM only for its treatment cell."""
 
     if not condition.use_hmm:
         return None
@@ -44,7 +45,7 @@ def resolve_hmm_path(
 def validate_hmm_provenance(
     hmm_path: str | None, *, skillset: SkillSet, model: str
 ) -> tuple[str | None, dict | None]:
-    """Require constrained-decision, no-oracle action-HMM provenance."""
+    """Require constrained-state, no-oracle action-HMM provenance."""
 
     if hmm_path is None:
         return None, None
@@ -64,10 +65,10 @@ def validate_hmm_provenance(
         "schema_version": skillset.schema_version,
         "policy_version": skillset.policy_version,
         "no_oracle_filtering": True,
-        "constrained_decision_collection": True,
+        "constrained_state_collection": True,
         "model": model,
         "tokenizer": model,
-        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+        "prompt_format": PROMPT_FORMAT,
     }
     mismatches = [
         f"{key}: checkpoint={metadata.get(key)!r}, evaluation={value!r}"
@@ -98,7 +99,7 @@ def main():
         help="Ctrl-G beam width and action candidates (default: 1)",
     )
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
-    parser.add_argument("--max_decision_tokens", type=int, default=512)
+    parser.add_argument("--max_state_tokens", type=int, default=512)
     parser.add_argument("--max_action_tokens", type=int, default=32)
     parser.add_argument("--min_action_tokens", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -151,7 +152,7 @@ def main():
 
     generation_config = GenConfig(
         max_thought_tokens=args.max_thought_tokens,
-        max_decision_tokens=args.max_decision_tokens,
+        max_state_tokens=args.max_state_tokens,
         max_action_tokens=args.max_action_tokens,
         min_action_tokens=args.min_action_tokens,
         beam_size=args.beam_size,
@@ -184,7 +185,7 @@ def main():
         "actions": 0,
         "admissible_actions": 0,
         "parsed_turns": 0,
-        "decision_schema_valid_turns": 0,
+        "state_schema_valid_turns": 0,
         "action_grammar_valid_turns": 0,
         "policy_evaluable_turns": 0,
         "policy_satisfied_turns": 0,
@@ -192,18 +193,18 @@ def main():
         "hmm_applied_turns": 0,
         "head_truncated_turns": 0,
         "thought_truncated_turns": 0,
-        "decision_truncated_turns": 0,
+        "state_truncated_turns": 0,
         "thought_repair_turns": 0,
-        "decision_repair_turns": 0,
+        "state_repair_turns": 0,
         "tail_truncated_turns": 0,
         "exact_tail_span_turns": 0,
         "prompt_tokens": 0,
         "thought_tokens": 0,
-        "decision_tokens": 0,
+        "state_tokens": 0,
         "generated_tokens": 0,
         "head_latency_seconds": 0.0,
         "thought_latency_seconds": 0.0,
-        "decision_latency_seconds": 0.0,
+        "state_latency_seconds": 0.0,
         "action_latency_seconds": 0.0,
     }
 
@@ -235,7 +236,7 @@ def main():
                 totals["actions"] += 1
                 totals["admissible_actions"] += int(step.action_was_admissible)
                 totals["parsed_turns"] += int(step.parse_ok)
-                totals["decision_schema_valid_turns"] += int(step.decision_schema_valid)
+                totals["state_schema_valid_turns"] += int(step.state_schema_valid)
                 totals["action_grammar_valid_turns"] += int(step.action_grammar_valid)
                 totals["policy_evaluable_turns"] += int(step.policy_evaluable)
                 totals["policy_satisfied_turns"] += int(step.policy_satisfied is True)
@@ -246,18 +247,18 @@ def main():
                 totals["hmm_applied_turns"] += int(step.hmm_applied)
                 totals["head_truncated_turns"] += int(step.head_truncated)
                 totals["thought_truncated_turns"] += int(step.thought_truncated)
-                totals["decision_truncated_turns"] += int(step.decision_truncated)
+                totals["state_truncated_turns"] += int(step.state_truncated)
                 totals["thought_repair_turns"] += int(step.used_thought_repair)
-                totals["decision_repair_turns"] += int(step.used_decision_repair)
+                totals["state_repair_turns"] += int(step.used_state_repair)
                 totals["tail_truncated_turns"] += int(step.tail_truncated)
                 totals["exact_tail_span_turns"] += int(step.tail_span_exact)
                 totals["prompt_tokens"] += step.prompt_tokens
                 totals["thought_tokens"] += step.thought_tokens
-                totals["decision_tokens"] += step.decision_tokens
+                totals["state_tokens"] += step.state_tokens
                 totals["generated_tokens"] += step.generated_tokens
                 totals["head_latency_seconds"] += step.head_latency_seconds
                 totals["thought_latency_seconds"] += step.thought_latency_seconds
-                totals["decision_latency_seconds"] += step.decision_latency_seconds
+                totals["state_latency_seconds"] += step.state_latency_seconds
                 totals["action_latency_seconds"] += step.action_latency_seconds
 
             action_count = max(totals["actions"], 1)
@@ -281,14 +282,14 @@ def main():
     summary = {
         "condition": condition.name.value,
         "factors": {
-            "use_decision": condition.use_decision,
-            "use_decision_dfa": condition.use_decision_dfa,
+            "use_state": condition.use_state,
+            "use_state_dfa": condition.use_state_dfa,
             "use_action_dfa": condition.use_action_dfa,
             "use_hmm": condition.use_hmm,
         },
         "model": args.model,
         "tokenizer": args.model,
-        "prompt_format": "decision_with_persistent_history_no_oracle_v1",
+        "prompt_format": PROMPT_FORMAT,
         "hmm": hmm_path,
         "hmm_sha256": artifact_sha256(hmm_path) if hmm_path else None,
         "hmm_training_metadata": hmm_training_metadata,
@@ -301,7 +302,7 @@ def main():
         "max_steps": args.max_steps,
         "beam_size": args.beam_size,
         "max_thought_tokens": args.max_thought_tokens,
-        "max_decision_tokens": args.max_decision_tokens,
+        "max_state_tokens": args.max_state_tokens,
         "max_action_tokens": args.max_action_tokens,
         "min_action_tokens": args.min_action_tokens,
         "temperature": args.temperature,
@@ -328,7 +329,7 @@ def main():
             "success_rate": totals["successes"] / max(totals["episodes"], 1),
             "admissibility_rate": totals["admissible_actions"] / action_count,
             "parse_rate": totals["parsed_turns"] / action_count,
-            "decision_schema_validity_rate": totals["decision_schema_valid_turns"] / action_count,
+            "state_schema_validity_rate": totals["state_schema_valid_turns"] / action_count,
             "action_grammar_validity_rate": totals["action_grammar_valid_turns"] / action_count,
             "policy_evaluability_rate": totals["policy_evaluable_turns"] / action_count,
             "policy_adherence_rate": totals["policy_satisfied_turns"] / max(totals["policy_evaluable_turns"], 1),
@@ -338,27 +339,27 @@ def main():
             "thought_truncation_rate": (
                 totals["thought_truncated_turns"] / action_count
             ),
-            "decision_truncation_rate": (
-                totals["decision_truncated_turns"] / action_count
+            "state_truncation_rate": (
+                totals["state_truncated_turns"] / action_count
             ),
             "thought_repair_rate": totals["thought_repair_turns"] / action_count,
-            "decision_repair_rate": totals["decision_repair_turns"] / action_count,
+            "state_repair_rate": totals["state_repair_turns"] / action_count,
             "tail_truncation_rate": totals["tail_truncated_turns"] / action_count,
             "exact_tail_span_rate": totals["exact_tail_span_turns"] / action_count,
             "mean_prompt_tokens_per_action": totals["prompt_tokens"] / action_count,
             "mean_thought_tokens_per_action": (
                 totals["thought_tokens"] / action_count
             ),
-            "mean_decision_tokens_per_action": (
-                totals["decision_tokens"] / action_count
+            "mean_state_tokens_per_action": (
+                totals["state_tokens"] / action_count
             ),
             "mean_generated_tokens_per_action": totals["generated_tokens"] / action_count,
             "mean_head_latency_seconds": totals["head_latency_seconds"] / action_count,
             "mean_thought_latency_seconds": (
                 totals["thought_latency_seconds"] / action_count
             ),
-            "mean_decision_latency_seconds": (
-                totals["decision_latency_seconds"] / action_count
+            "mean_state_latency_seconds": (
+                totals["state_latency_seconds"] / action_count
             ),
             "mean_action_latency_seconds": totals["action_latency_seconds"] / action_count,
             "per_rule_activations": dict(sorted(rule_activations.items())),

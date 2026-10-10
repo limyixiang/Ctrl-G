@@ -12,77 +12,94 @@ class GenerationParsingTests(unittest.TestCase):
         parsed = parse_turn(
             "Find the target first.</think><action>",
             "go to countertop 1</action>",
-            use_decision=False,
+            use_state=False,
         )
         self.assertTrue(parsed.parse_ok)
         self.assertEqual(parsed.thought, "Find the target first.")
-        self.assertEqual(parsed.decision, "")
+        self.assertEqual(parsed.state, "")
         self.assertEqual(parsed.hmm_prefix_text, "<action>")
         self.assertEqual(parsed.action, "go to countertop 1")
 
-    def test_parse_decision_turn_and_hmm_prefix(self):
+    def test_parse_state_turn_and_hmm_prefix(self):
         parsed = parse_turn(
             (
                 "<think>Inspect an unseen surface.</think>\n"
-                "<decision>Continue systematic search.</decision>\n<action>"
+                "<state>Continue systematic search.</state>\n<action>"
             ),
             "go to shelf 2</action>",
-            use_decision=True,
+            use_state=True,
         )
         self.assertTrue(parsed.parse_ok)
-        self.assertEqual(parsed.decision, "Continue systematic search.")
+        self.assertEqual(parsed.state, "Continue systematic search.")
         self.assertEqual(
             parsed.hmm_prefix_text,
-            "\n<decision>Continue systematic search.</decision>\n<action>",
+            "\n<state>Continue systematic search.</state>\n<action>",
         )
         self.assertEqual(parsed.action, "go to shelf 2")
 
     def test_tags_inside_native_thought_do_not_override_emitted_blocks(self):
         parsed = parse_turn(
             (
-                "Consider <decision>wait</decision> and "
+                "Consider <state>wait</state> and "
                 "<action>inventory</action>.</think>"
-                "<decision>Continue searching.</decision><action>"
+                "<state>Continue searching.</state><action>"
             ),
             "look</action>",
-            use_decision=True,
+            use_state=True,
         )
         self.assertTrue(parsed.parse_ok)
-        self.assertEqual(parsed.decision, "Continue searching.")
+        self.assertEqual(parsed.state, "Continue searching.")
         self.assertEqual(parsed.action, "look")
+
+    def test_legacy_and_mismatched_state_tags_are_rejected(self):
+        for block in (
+            "<decision>{task: put}</decision>",
+            "<state>{task: put}</decision>",
+            "<decision>{task: put}</state>",
+            "<state> </state>",
+        ):
+            with self.subTest(block=block):
+                parsed = parse_turn(
+                    "reason</think>" + block + "<action>",
+                    "look</action>",
+                    use_state=True,
+                )
+                self.assertFalse(parsed.parse_ok)
+                self.assertFalse(parsed.state_format_ok)
+                self.assertIn("missing_or_empty_state", parsed.errors)
 
     def test_unclosed_action_tag_inside_native_thought_is_ignored(self):
         parsed = parse_turn(
             (
                 "Do not emit <action>inventory yet.</think>"
-                "<decision>Continue searching.</decision><action>"
+                "<state>Continue searching.</state><action>"
             ),
             "look</action>",
-            use_decision=True,
+            use_state=True,
         )
         self.assertTrue(parsed.parse_ok)
-        self.assertEqual(parsed.decision, "Continue searching.")
+        self.assertEqual(parsed.state, "Continue searching.")
         self.assertEqual(parsed.action, "look")
 
     def test_unexpected_text_is_measured_not_silently_discarded(self):
         parsed = parse_turn(
             "reason</think>Maybe this one.<action>",
             "look</action>",
-            use_decision=False,
+            use_state=False,
         )
         self.assertFalse(parsed.parse_ok)
         self.assertIn("unexpected_pre_action_text", parsed.errors)
 
     def test_missing_closer_is_a_parse_failure(self):
         parsed = parse_turn(
-            "reason</think><action>", "look", use_decision=False
+            "reason</think><action>", "look", use_state=False
         )
         self.assertFalse(parsed.parse_ok)
         self.assertIn("missing_action_close", parsed.errors)
 
     def test_post_action_text_is_a_parse_failure(self):
         parsed = parse_turn(
-            "reason</think><action>", "look</action>,", use_decision=False
+            "reason</think><action>", "look</action>,", use_state=False
         )
         self.assertFalse(parsed.parse_ok)
         self.assertIn("unexpected_post_action_text", parsed.errors)

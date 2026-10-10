@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 from pathlib import Path
 
@@ -17,14 +18,16 @@ class QwenTokenizerSmokeTests(unittest.TestCase):
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(MODEL)
-        graph = lift_character_fsm(regex_fsm(r"look</action>"), tokenizer)
-        token_ids = tokenizer.encode("look</action>", add_special_tokens=False)
-        self.assertTrue(dfa_accepts(graph, token_ids))
-        decoded = tokenizer.decode(
-            token_ids, skip_special_tokens=False,
-            clean_up_tokenization_spaces=False,
-        )
-        self.assertEqual(decoded, "look</action>")
+        for text in ("look</action>", "{task: put}</state>"):
+            with self.subTest(text=text):
+                graph = lift_character_fsm(regex_fsm(re.escape(text)), tokenizer)
+                token_ids = tokenizer.encode(text, add_special_tokens=False)
+                self.assertTrue(dfa_accepts(graph, token_ids))
+                decoded = tokenizer.decode(
+                    token_ids, skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+                self.assertEqual(decoded, text)
 
 
 if __name__ == "__main__":

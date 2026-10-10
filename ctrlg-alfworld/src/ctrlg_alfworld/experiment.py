@@ -7,27 +7,27 @@ from enum import Enum
 
 
 class ConditionName(str, Enum):
-    DECISION_PROMPT = "decision_prompt"
-    DECISION_CTRLG = "decision_ctrlg"
+    STATE_PROMPT = "state_prompt"
+    STATE_CTRLG = "state_ctrlg"
 
 
 @dataclass(frozen=True)
 class ExperimentCondition:
     name: ConditionName
     use_hmm: bool
-    use_decision: bool = True
-    use_decision_dfa: bool = False
+    use_state: bool = True
+    use_state_dfa: bool = False
     use_action_dfa: bool = False
 
 
 CONDITIONS: dict[ConditionName, ExperimentCondition] = {
-    ConditionName.DECISION_PROMPT: ExperimentCondition(
-        ConditionName.DECISION_PROMPT, use_hmm=False
+    ConditionName.STATE_PROMPT: ExperimentCondition(
+        ConditionName.STATE_PROMPT, use_hmm=False
     ),
-    ConditionName.DECISION_CTRLG: ExperimentCondition(
-        ConditionName.DECISION_CTRLG,
+    ConditionName.STATE_CTRLG: ExperimentCondition(
+        ConditionName.STATE_CTRLG,
         use_hmm=True,
-        use_decision_dfa=True,
+        use_state_dfa=True,
         use_action_dfa=True,
     ),
 }

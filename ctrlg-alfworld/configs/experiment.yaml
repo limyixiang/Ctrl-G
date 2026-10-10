@@ -1,12 +1,12 @@
 experiment:
   conditions:
-    - decision_prompt
-    - decision_ctrlg
+    - state_prompt
+    - state_ctrlg
   estimand: "effect of schema/policy constrained Ctrl-G over the byte-identical prompt-only agent"
   seed: 42
   max_steps: 50
   max_thought_tokens: 1024
-  max_decision_tokens: 512
+  max_state_tokens: 512
   max_action_tokens: 32
   min_action_tokens: 1
   beam_size: 1
@@ -15,8 +15,8 @@ experiment:
   max_hmm_prefix_tokens: null
 
 distillation:
-  prompt_format: "decision block with persistent decision-history replay"
-  sampling_policy: "hard-DFA decisions followed by unconstrained actions; resample only empty actions"
+  prompt_format: "state block with persistent state-history replay"
+  sampling_policy: "hard-DFA states followed by unconstrained actions; resample only empty actions"
   split_policy: "state-group train/dev split"
   sequence: "generated post-think text through <action>, action body, </action>, EOS"
   excludes:
@@ -27,9 +27,9 @@ distillation:
 
 invariants:
   use_state_tracker: false
-  decision_history_replay: true
+  state_history_replay: true
   admissible_commands_generation_use: false
-  dfa_source: "versioned SKILLS.md schemas/policies plus model-declared decision fields"
-  dfa_scope: "decision body plus closer; action body plus closer"
+  dfa_source: "versioned SKILLS.md schemas/policies plus model-declared state fields"
+  dfa_scope: "state body plus closer; action body plus closer"
   same_prompt_and_skills_across_conditions: true
   evaluation_backend: "in-process Hugging Face"

@@ -12,7 +12,7 @@ from .skills import SkillSet
 from .constraints import (
     action_grammar_valid,
     compile_policy_language,
-    parse_decision,
+    parse_state,
     policy_satisfied,
 )
 
@@ -47,7 +47,7 @@ class StepRecord:
     step: int
     condition: str
     thought: str
-    decision: str
+    state: str
     action: str
     observation: str
     admissible_gt: list[str]
@@ -56,10 +56,10 @@ class StepRecord:
     parse_errors: list[str]
     used_head_repair: bool
     used_thought_repair: bool
-    used_decision_repair: bool
+    used_state_repair: bool
     head_truncated: bool
     thought_truncated: bool
-    decision_truncated: bool
+    state_truncated: bool
     tail_truncated: bool
     tail_span_exact: bool
     hmm_applied: bool
@@ -70,14 +70,14 @@ class StepRecord:
     tail_token_ids: list[int]
     prompt_tokens: int
     thought_tokens: int
-    decision_tokens: int
+    state_tokens: int
     generated_tokens: int
     head_latency_seconds: float
     thought_latency_seconds: float
-    decision_latency_seconds: float
+    state_latency_seconds: float
     action_latency_seconds: float
-    decision_schema_valid: bool
-    decision_fields: dict
+    state_schema_valid: bool
+    state_fields: dict
     action_grammar_valid: bool
     activated_policies: list[str]
     shadowed_policies: list[str]
@@ -138,7 +138,7 @@ def run_episode(
             initial_observation=initial_obs,
             current_observation=obs,
             obs_history=steps,
-            use_decision=condition.use_decision,
+            use_state=condition.use_state,
         )
 
         prompt_text = render_prompt(backend.tokenizer, system_prompt, user_prompt)
@@ -153,38 +153,38 @@ def run_episode(
             prompt_text,
             skillset,
             task_key,
-            constrained=condition.use_decision_dfa,
+            constrained=condition.use_state_dfa,
             greedy_head=greedy_head,
         )
         action = turn.parsed.action
 
-        decision_schema_valid = turn.decision_schema_valid
-        decision_fields = turn.decision_fields
+        state_schema_valid = turn.state_schema_valid
+        state_fields = turn.state_fields
         activated_policies = turn.activated_policies
         shadowed_policies = turn.shadowed_policies
         policy_evaluable = turn.policy_evaluable
         policy_adherence = turn.policy_satisfied
         policy_fallback_reason = turn.policy_fallback_reason
         grammar_valid = turn.action_grammar_valid
-        if not condition.use_decision_dfa:
+        if not condition.use_state_dfa:
             grammar_valid = action_grammar_valid(action, skillset)
             try:
-                decision_fields = parse_decision(
-                    turn.parsed.decision, skillset.decision_schemas[task_key], skillset
+                state_fields = parse_state(
+                    turn.parsed.state, skillset.state_schemas[task_key], skillset
                 )
-                decision_schema_valid = True
-                policy = compile_policy_language(decision_fields, skillset)
+                state_schema_valid = True
+                policy = compile_policy_language(state_fields, skillset)
                 activated_policies = policy.activated
                 shadowed_policies = policy.shadowed
                 policy_evaluable = policy.evaluable
                 policy_adherence = policy_satisfied(action, policy)
                 policy_fallback_reason = policy.fallback_reason
             except ValueError as exc:
-                decision_fields = {}
-                decision_schema_valid = False
+                state_fields = {}
+                state_schema_valid = False
                 policy_evaluable = False
                 policy_adherence = None
-                policy_fallback_reason = f"invalid_decision_schema: {exc}"
+                policy_fallback_reason = f"invalid_state_schema: {exc}"
 
         ob, reward, done, info = env.step([action])
         obs = process_ob(ob[0])
@@ -193,7 +193,7 @@ def run_episode(
             step=t,
             condition=condition.name.value,
             thought=turn.parsed.thought,
-            decision=turn.parsed.decision,
+            state=turn.parsed.state,
             action=action,
             observation=obs,
             admissible_gt=admissible_actions,
@@ -202,10 +202,10 @@ def run_episode(
             parse_errors=list(turn.parsed.errors),
             used_head_repair=turn.used_head_repair,
             used_thought_repair=turn.used_thought_repair,
-            used_decision_repair=turn.used_decision_repair,
+            used_state_repair=turn.used_state_repair,
             head_truncated=turn.head_truncated,
             thought_truncated=turn.thought_truncated,
-            decision_truncated=turn.decision_truncated,
+            state_truncated=turn.state_truncated,
             tail_truncated=turn.tail_truncated,
             tail_span_exact=turn.tail_span_exact,
             hmm_applied=turn.hmm_applied,
@@ -216,14 +216,14 @@ def run_episode(
             tail_token_ids=list(turn.tail_token_ids),
             prompt_tokens=prompt_tokens,
             thought_tokens=len(turn.thought_token_ids),
-            decision_tokens=len(turn.decision_token_ids),
+            state_tokens=len(turn.state_token_ids),
             generated_tokens=turn.total_generated_tokens,
             head_latency_seconds=turn.head_latency_seconds,
             thought_latency_seconds=turn.thought_latency_seconds,
-            decision_latency_seconds=turn.decision_latency_seconds,
+            state_latency_seconds=turn.state_latency_seconds,
             action_latency_seconds=turn.action_latency_seconds,
-            decision_schema_valid=decision_schema_valid,
-            decision_fields=decision_fields,
+            state_schema_valid=state_schema_valid,
+            state_fields=state_fields,
             action_grammar_valid=grammar_valid,
             activated_policies=list(activated_policies),
             shadowed_policies=list(shadowed_policies),
@@ -233,14 +233,14 @@ def run_episode(
         ))
         steps.append(Step(
             thought=turn.parsed.thought,
-            decision=turn.parsed.decision,
+            state=turn.parsed.state,
             action=action,
             observation=obs,
         ))
 
         if verbose:
             print(
-                f"[{t}] decision={turn.parsed.decision!r} "
+                f"[{t}] state={turn.parsed.state!r} "
                 f"parse_ok={turn.parsed.parse_ok}\n"
                 f"   {action}\n    {obs}"
             )

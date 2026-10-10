@@ -11,7 +11,7 @@ class PromptTests(unittest.TestCase):
             initial_observation="You are in a kitchen.",
             current_observation="You see a countertop 1.",
             obs_history=history or [],
-            use_decision=True,
+            use_state=True,
         )
 
     def test_initial_prompt_contains_task_and_no_oracle_list(self):
@@ -30,15 +30,15 @@ class PromptTests(unittest.TestCase):
             skill_content="raw skill bytes", task_description="find cup",
             initial_observation="room", current_observation="room", obs_history=[]
         )
-        baseline = build_user_prompt(**arguments, use_decision=True)
-        treatment = build_user_prompt(**arguments, use_decision=True)
+        baseline = build_user_prompt(**arguments, use_state=True)
+        treatment = build_user_prompt(**arguments, use_state=True)
         self.assertEqual(baseline.encode(), treatment.encode())
 
     def test_admissible_parameters_are_not_accepted(self):
         with self.assertRaises(TypeError):
             build_user_prompt(
                 skill_content="x", task_description="x", initial_observation="x",
-                current_observation="x", obs_history=[], use_decision=True,
+                current_observation="x", obs_history=[], use_state=True,
                 admissible_actions=["look"],
             )
 

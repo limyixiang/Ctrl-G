@@ -12,19 +12,27 @@ class SkillParsingTests(unittest.TestCase):
     def test_repository_skill_has_six_schemas_and_four_policies(self):
         skills = SkillSet.from_file(ROOT / "templates" / "SKILLS.md")
         self.assertTrue(all(isinstance(action, Action) for action in skills.actions))
-        self.assertEqual(len(skills.decision_schemas), 6)
+        self.assertEqual(len(skills.state_schemas), 6)
         self.assertEqual(len(skills.policies), 4)
         self.assertEqual(skills.schema_version, 1)
         self.assertEqual(skills.policy_version, 1)
 
     def test_duplicate_schema_is_rejected(self):
         original = (ROOT / "templates" / "SKILLS.md").read_text()
-        block_start = original.index("```decision-schema")
+        block_start = original.index("```state-schema")
         block_end = original.index("```", block_start + 3) + 3
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "SKILLS.md"
             path.write_text(original + "\n" + original[block_start:block_end])
-            with self.assertRaisesRegex(ValueError, "duplicate decision schema"):
+            with self.assertRaisesRegex(ValueError, "duplicate state schema"):
+                SkillSet.from_file(path)
+
+    def test_legacy_schema_blocks_are_rejected(self):
+        original = (ROOT / "templates" / "SKILLS.md").read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "SKILLS.md"
+            path.write_text(original.replace("```state-schema", "```decision-schema"))
+            with self.assertRaisesRegex(ValueError, "No ```state-schema blocks"):
                 SkillSet.from_file(path)
 
     def test_unknown_policy_action_template_is_rejected(self):
