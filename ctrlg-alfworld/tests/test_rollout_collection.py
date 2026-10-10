@@ -25,6 +25,7 @@ def make_turn(
     tail_truncated=False,
     action_close_found=True,
     tail_span_exact=True,
+    action_grammar_valid=None,
     hmm_prefix_token_ids=(10, 11),
 ):
     return SimpleNamespace(
@@ -40,7 +41,9 @@ def make_turn(
         state_truncated=state_truncated,
         tail_truncated=tail_truncated,
         state_stop_found=not state_truncated, state_schema_valid=parse_ok,
-        tail_stop_found=action_close_found, action_grammar_valid=bool(action),
+        tail_stop_found=action_close_found,
+        action_grammar_valid=(bool(action.strip()) if action_grammar_valid is None
+                              else action_grammar_valid),
         tail_span_exact=tail_span_exact,
         hmm_prefix_token_ids=hmm_prefix_token_ids,
     )
@@ -427,6 +430,15 @@ class RolloutCollectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "temperature"):
             run_rollouts.validate_resume_metadata(existing, expected)
 
+    def test_resume_rejects_collection_with_older_execution_gate(self):
+        expected = {field: None for field in run_rollouts.RESUME_COMPATIBILITY_FIELDS}
+        expected["collection_execution_policy"] = run_rollouts.COLLECTION_EXECUTION_POLICY
+        existing = dict(expected)
+        existing.pop("collection_execution_policy")
+        with self.assertRaisesRegex(ValueError, "collection_execution_policy"):
+            run_rollouts.validate_resume_metadata(existing, expected)
+        run_rollouts.validate_resume_metadata(expected, expected)
+
     def test_metadata_progress_reports_episode_successes(self):
         metadata = {"num_episodes": 4}
         per_format = {
@@ -512,13 +524,36 @@ class RolloutCollectionTests(unittest.TestCase):
         history["steps"][0]["sample_attempts"] = 3
         self.assertFalse(run_rollouts._history_matches_episode(history, episode))
 
-    def test_selection_skips_malformed_state(self):
+    def test_selection_accepts_malformed_state_with_complete_action(self):
         malformed = make_turn(parse_ok=False, action="look")
         well_formed = make_turn(parse_ok=True, action="look")
         self.assertEqual(
             run_rollouts.select_advance_turn([(0, malformed), (1, well_formed)]),
-            (1, well_formed),
+            (0, malformed),
         )
+
+    def test_selection_accepts_first_action_after_synthetic_state_close(self):
+        repaired = make_turn(parse_ok=False, action="look", state_truncated=True,
+                             used_head_repair=True, used_state_repair=True)
+        natural = make_turn(parse_ok=True, action="look")
+        self.assertEqual(run_rollouts.select_advance_turn([(0, repaired), (1, natural)]),
+                         (0, repaired))
+
+    def test_selection_rejects_unusable_actions_regardless_of_state(self):
+        from ctrlg_alfworld.collection import execution_rejection_reasons
+        cases = [
+            ("empty_action", dict(action="")),
+            ("empty_action", dict(action="  \n")),
+            ("missing_action_close", dict(action="look", action_close_found=False)),
+            ("action_truncated", dict(action="look", tail_truncated=True)),
+            ("inexact_action_span", dict(action="look", tail_span_exact=False)),
+            ("invalid_action_grammar", dict(action="go to", action_grammar_valid=False)),
+        ]
+        for reason, kwargs in cases:
+            with self.subTest(reason=reason, kwargs=kwargs):
+                turn = make_turn(parse_ok=True, **kwargs)
+                self.assertIsNone(run_rollouts.select_advance_turn([(0, turn)]))
+                self.assertIn(reason, execution_rejection_reasons(turn))
 
     def test_selection_uses_first_nonempty_even_if_head_was_repaired(self):
         repaired = make_turn(

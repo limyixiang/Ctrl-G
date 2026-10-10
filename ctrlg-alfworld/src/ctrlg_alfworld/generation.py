@@ -74,6 +74,7 @@ class HeadGeneration:
     state_chunk: GeneratedChunk | None
     used_thought_repair: bool = False
     used_state_repair: bool = False
+    synthetic_state_close_token_ids: tuple[int, ...] = ()
     hmm_target_start: int = 0
     hmm_observed_head_end: int = 0
 
@@ -116,7 +117,9 @@ class TurnGeneration:
     state_failure_reasons: tuple[str, ...] = ()
     used_thought_repair: bool = False
     used_state_repair: bool = False
+    synthetic_state_close_token_ids: tuple[int, ...] = ()
     state_schema_valid: bool = False
+    state_schema_error: str | None = None
     state_fields: dict = field(default_factory=dict)
     action_grammar_valid: bool = False
     activated_policies: tuple[str, ...] = ()

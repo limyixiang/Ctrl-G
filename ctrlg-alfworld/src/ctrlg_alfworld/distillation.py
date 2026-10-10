@@ -223,6 +223,13 @@ def validate_prompt_regime(records: list[dict]) -> dict:
         raise ValueError("HMM samples use an obsolete rollout_sample_format or hmm_sequence_format")
     if result["no_oracle_filtering"] is not True:
         raise ValueError("HMM samples must not be filtered by the environment oracle")
+    # Older unmasked files lack this marker and remain reusable. New files carry
+    # it into dataset/checkpoint provenance; mixing selection regimes is explicit.
+    execution_policies = {record.get("collection_execution_policy") for record in records}
+    if execution_policies != {None}:
+        if len(execution_policies) != 1 or None in execution_policies:
+            raise ValueError("records do not share one collection_execution_policy")
+        result["collection_execution_policy"] = execution_policies.pop()
     return result
 
 

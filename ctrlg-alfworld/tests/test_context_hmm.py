@@ -15,7 +15,7 @@ from ctrlg_alfworld.backends import BaseBackend, GenConfig
 from ctrlg_alfworld.collection import executable_attempt, training_span, observed_attempt_span
 from ctrlg_alfworld.constraints import build_trie_dfa
 from ctrlg_alfworld.distillation import (extract_lvd_embeddings, pad_sequences, split_records,
-    validate_record, build_contextual_records, summarize_context_usage)
+    validate_record, validate_prompt_regime, build_contextual_records, summarize_context_usage)
 from ctrlg_alfworld.generation import GeneratedChunk
 from ctrlg_alfworld.hmm_context import HMM_SEQUENCE_FORMAT, build_hmm_context
 from ctrlg_alfworld.prompts import Step
@@ -246,7 +246,7 @@ def test_context_and_teacher_embeddings_align_to_their_causal_predecessors():
         def __call__(self, input_ids, **kwargs):
             return SimpleNamespace(hidden_states=(input_ids.float().unsqueeze(-1),))
     context = build_hmm_context(Tokenizer(), "task", "room", "room", [])
-    attempt = make_attempt("partial")
+    attempt = make_attempt("partial", "look</action>", action_closed=True)
     row = record(attempt, context)
     sequences, embeddings = extract_lvd_embeddings(Model(), [row], eos_token_id=0)
     assert sequences[0].tolist() == row["hmm_sequence_token_ids"]
@@ -256,6 +256,18 @@ def test_context_and_teacher_embeddings_align_to_their_causal_predecessors():
     target_n = len(row["hmm_target_token_ids"])
     teacher = row["prompt_token_ids"] + row["head_token_ids"]
     assert embeddings[0,n:,0].tolist() == teacher[2+start-1:2+start+target_n-1]
+    assert row["hmm_target_token_ids"] == Tokenizer().encode("<state>partial")
+    assert row["hmm_action_start"] is None
+
+
+def test_empty_repaired_state_has_no_hmm_evidence_even_with_observed_action():
+    attempt = make_attempt("", "look</action>", action_closed=True)
+    span = observed_attempt_span(attempt, 0)
+    assert attempt.tail_token_ids and attempt.used_state_repair
+    assert not span["distill_eligible"]
+    assert span["distill_exclusion_reasons"] == ["no_observed_target_tokens"]
+    assert span["hmm_target_token_ids"] == Tokenizer().encode("<state>")
+    assert not span["hmm_appended_eos"]
 
 
 def test_output_conditional_likelihood_excludes_context_and_padding():
@@ -345,6 +357,7 @@ def test_dataset_cli_writes_all_attempts_and_explicit_lengths(tmp_path, monkeypa
                                    "--output_dir",str(output),"--dev_fraction",".5"])
     builder.main()
     metadata = json.loads((output/"alfworld_actions.metadata.json").read_text())
+    assert metadata["collection_execution_policy"] == rows[0]["collection_execution_policy"]
     assert metadata["selection_policy"] == "all_observed_attempts"
     assert metadata["train_records"] == metadata["dev_records"] == 6
     assert metadata["completed_records"] == metadata["truncated_records"] == 6
@@ -373,3 +386,10 @@ def test_dataset_cli_writes_all_attempts_and_explicit_lengths(tmp_path, monkeypa
         assert first_row[first_span["context_length"]:first_span["length"]].tolist() == (
             second_row[second_span["context_length"]:second_span["length"]].tolist())
     assert any(a["context_length"] != b["context_length"] for a,b in zip(spans,second_spans))
+
+    # Older unmasked samples remain usable with their original selection/history.
+    older = [{key: value for key, value in row.items() if key != "collection_execution_policy"}
+             for row in rows]
+    assert "collection_execution_policy" not in validate_prompt_regime(older)
+    with pytest.raises(ValueError, match="collection_execution_policy"):
+        validate_prompt_regime([rows[0], older[1]])

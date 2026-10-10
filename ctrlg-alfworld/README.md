@@ -89,12 +89,20 @@ inadmissible actions, unsuccessful episodes and truncated outputs.
 
 At a step, collection makes at most `--collection_max_attempts` independent
 whole-turn draws (default 5) from the same prompt and environment state. It
-executes the first complete, parseable state plus syntactically valid action.
-The schema and action grammar are public; environment admissibility and actual
-progress never determine selection. If that action fails in the environment,
-its feedback enters history. If no attempt is executable, the episode ends
+executes the first nonempty, complete action that matches the public action
+grammar and has an exact token span ending in `</action>`. State-schema validity
+and natural state completion are not execution requirements. If a state fails
+to close, the collector inserts only `</state>` and proceeds to unmasked action
+generation; it does not invent or fix state fields. Environment admissibility
+and actual progress never determine selection. If that action fails in the
+environment, its feedback enters history. If no attempt is executable, the episode ends
 and all its observed attempts remain available for training. Evaluation uses
 one turn per step in both arms, without collection retries.
+
+Attempt records and history candidate audits log state-schema validity/errors,
+state repair/truncation, action-grammar validity, execution selection and explicit
+action rejection reasons. Original state tokens, synthetic state-closer tokens
+and generated action tokens are stored separately in each attempt record.
 
 Collection saves exact observed targets in `samples.jsonl` and full observable
 episode history in `history.jsonl`. It does not choose an HMM history window or
@@ -135,10 +143,15 @@ The declared state then determines the actual policy action DFA.
 
 Truncated examples contain only their observed target prefix. They receive
 no invented closers or EOS; an actual model EOS is retained even if the
-protocol is incomplete. Only a completed action protocol gets an appended
-EOS. `-2` is right padding with no evidence or EM counts, distinct from `-1`
-token dropout. Attempts with no sampled state/action tokens are saved but
-have no HMM training target. Training gives each observed attempt one sequence
+protocol is incomplete. For a synthetically closed state, the HMM target ends
+before the inserted closer: the subsequent action remains in the raw record
+and may be executed, but is excluded from that joint HMM sequence. Its
+`hmm_action_exclusion_reason` is `generated_after_synthetic_state_close`.
+Only a naturally completed state/action protocol gets an appended EOS.
+`-2` is right padding with no evidence or EM counts, distinct from `-1`
+token dropout. Attempts with no sampled tokens before the HMM target cutoff
+are saved but have no HMM training target. This includes an empty repaired
+state even if its later action is executable. Training gives each observed attempt one sequence
 likelihood term, so steps requiring more retries contribute more examples.
 Retries and all steps from the same game instance stay in one train/dev split.
 
@@ -225,10 +238,15 @@ of generated states or native thinking. The independent HMM identifiers are
 `scripts/submit_all.sh` starts fresh collections in `9b_context_rollout_v1`
 and `4b_context_rollout_v1`. New raw samples use
 `unmasked_state_action_attempt_v1`. Resume checks enforce the raw serialization,
-sampling policy and retry budget; HMM context settings are independent of
-collection. Collections from older serialization versions cannot be resumed
+sampling policy, `collection_execution_policy` and retry budget; HMM context
+settings are independent of collection. Collections from older serialization versions cannot be resumed
 under the new raw collector, but the unmasked context-format records above can
 be reused for dataset building.
+Start a fresh collection directory for the action-based execution policy
+`complete_action_allow_state_repair_v1`; collections using the older strict
+state gate cannot be resumed with the new policy. Their unmasked samples and
+original histories remain reusable for dataset building. New builds carry the
+execution-policy marker into dataset/checkpoint provenance.
 `--state_max_attempts` and `--state_retry_temperature` are replaced by
 `--collection_max_attempts`, which bounds whole unmasked turn attempts.
 

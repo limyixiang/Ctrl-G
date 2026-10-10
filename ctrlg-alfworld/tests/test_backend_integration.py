@@ -307,22 +307,55 @@ class BackendIntegrationTests(unittest.TestCase):
         self.assertEqual([kw["temperature"] for _,kw in calls], [.4,.4,.6])
         self.assertEqual(turn.total_generated_tokens, baseline.total_generated_tokens + 1)
 
-    def test_training_returns_truncated_state_without_action_or_synthetic_target(self):
-        backend = object.__new__(VLLMBackend)
-        backend.tokenizer = CharacterTokenizer()
-        backend.cfg = GenConfig(seed=19)
-        calls = []
-        def generate(prompt, stops, cap, temperature, *, seed, guided_regex=None):
-            self.assertIsNone(guided_regex)
-            calls.append(stops)
-            return chunk("reason</think>" if stops == ["</think>"] else "{task: put", backend.tokenizer,
-                         stop=stops == ["</think>"])
-        backend._generate_until = generate
-        turn = backend.generate_turns_training("P", self.skills, "put", count=1)[0]
-        self.assertEqual(calls, [["</think>"], ["</state>"]])
-        self.assertEqual(backend.tokenizer.decode(turn.hmm_target_token_ids), "<state>{task: put")
-        self.assertEqual(turn.tail_token_ids, ())
-        self.assertTrue(turn.state_truncated)
+    def test_training_generates_action_after_invalid_state_and_preserves_spans(self):
+        from ctrlg_alfworld.collection import observed_attempt_span
+        for backend_type in (HFBackend, VLLMBackend):
+            for state_text, state_closed in (("{task: put", False),
+                                             ("malformed</state>", True), ("", False)):
+                with self.subTest(backend=backend_type.__name__, state=state_text):
+                    backend = object.__new__(backend_type)
+                    backend.tokenizer = CharacterTokenizer()
+                    backend.cfg = GenConfig(seed=19)
+                    calls = []
+                    def generate(prompt, stops, cap, temperature, *, seed=None, guided_regex=None):
+                        self.assertIsNone(guided_regex)
+                        calls.append((prompt, stops, temperature, seed))
+                        if stops == ["</think>"]:
+                            return chunk("reason</think>", backend.tokenizer)
+                        if stops == ["</state>"]:
+                            return chunk(state_text, backend.tokenizer, stop=state_closed)
+                        return chunk("look</action>", backend.tokenizer)
+                    backend._generate_until = generate
+                    turn = backend.generate_turns_training("P", self.skills, "put", count=1)[0]
+                    span = observed_attempt_span(turn, 0)
+                    self.assertEqual([c[1] for c in calls], [["</think>"], ["</state>"], ["</action>"]])
+                    self.assertEqual([c[2] for c in calls], [None, .7, .7])
+                    self.assertTrue(calls[2][0].endswith("</state><action>"))
+                    self.assertEqual(turn.state_token_ids, tuple(backend.tokenizer.encode(state_text)))
+                    self.assertEqual(turn.parsed.action, "look")
+                    self.assertEqual(turn.tail_token_ids, tuple(backend.tokenizer.encode("look</action>")))
+                    self.assertFalse(turn.state_schema_valid)
+                    self.assertIn("schema", turn.state_schema_error)
+                    self.assertTrue(span["selected_for_execution"])
+                    self.assertEqual(span["execution_rejection_reasons"], [])
+                    self.assertEqual(span["distill_eligible"], bool(state_text))
+                    self.assertEqual(turn.used_state_repair, not state_closed)
+                    if not state_closed:
+                        self.assertEqual(backend.tokenizer.decode(turn.hmm_target_token_ids),
+                                         "<state>" + state_text)
+                        self.assertEqual(backend.tokenizer.decode(turn.synthetic_state_close_token_ids), "</state>")
+                        self.assertFalse(span["hmm_appended_eos"])
+                        self.assertFalse(span["hmm_completed"])
+                        self.assertIsNone(span["hmm_action_start_in_target"])
+                        self.assertEqual(span["hmm_action_exclusion_reason"],
+                                         "generated_after_synthetic_state_close")
+                    else:
+                        self.assertTrue(span["hmm_completed"])
+                        self.assertEqual(turn.synthetic_state_close_token_ids, ())
+                        self.assertIsNone(span["hmm_action_exclusion_reason"])
+                    if backend_type is VLLMBackend:
+                        self.assertIsNotNone(turn.tail_seed)
+                        self.assertEqual(len({c[3] for c in calls}), 3)
 
 
 if __name__ == "__main__":

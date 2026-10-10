@@ -184,6 +184,7 @@ class BaseBackend:
             append_fixed(THINK_CLOSE)
 
         used_state_repair = False
+        synthetic_state_close_token_ids = ()
         hmm_target_start = len(token_ids)
         hmm_observed_head_end = len(token_ids)
         if use_state:
@@ -206,7 +207,9 @@ class BaseBackend:
             hmm_observed_head_end = len(token_ids)
             used_state_repair = not state.stop_found
             if used_state_repair:
+                repair_start = len(token_ids)
                 append_fixed(STATE_CLOSE)
+                synthetic_state_close_token_ids = tuple(token_ids[repair_start:])
 
         append_fixed(ACTION_OPEN)
         if not used_state_repair:
@@ -232,6 +235,7 @@ class BaseBackend:
             state_chunk=state,
             used_thought_repair=used_thought_repair,
             used_state_repair=used_state_repair,
+            synthetic_state_close_token_ids=synthetic_state_close_token_ids,
             hmm_target_start=hmm_target_start,
             hmm_observed_head_end=hmm_observed_head_end,
         )
@@ -377,6 +381,7 @@ class BaseBackend:
             ),
             used_thought_repair=head.used_thought_repair,
             used_state_repair=head.used_state_repair,
+            synthetic_state_close_token_ids=head.synthetic_state_close_token_ids,
             hmm_target_token_ids=tuple(
                 head.chunk.token_ids[head.hmm_target_start:head.hmm_observed_head_end]
                 + (tail.token_ids if not head.used_state_repair else ())
@@ -406,17 +411,21 @@ class BaseBackend:
             state = sample(prompt_text + thought_text + STATE_OPEN, [STATE_CLOSE],
                            self.cfg.max_state_tokens, self.cfg.rollout_temperature, "state")
             head = self._assemble_head(thought, state, use_state=True)
-            tail = (sample(prompt_text + head.chunk.text, [ACTION_CLOSE],
-                           self.cfg.max_action_tokens, self.cfg.rollout_temperature, "action")
-                    if state.stop_found else GeneratedChunk("", (), False, False, 0.0))
+            # A synthetic closer allows an action draw after a censored state.
+            # _assemble_unconstrained_turn keeps the HMM target before that repair.
+            tail = sample(prompt_text + head.chunk.text, [ACTION_CLOSE],
+                          self.cfg.max_action_tokens, self.cfg.rollout_temperature, "action")
             turn = self._assemble_unconstrained_turn(
                 head, tail, use_state=True, head_seed=seeds.get("thought"),
                 state_seed=seeds.get("state"), tail_seed=seeds.get("action"))
+            state_schema_error = None
             try:
                 fields = parse_state(turn.parsed.state, skillset.state_schemas[task_key], skillset)
-            except ValueError:
+            except ValueError as exc:
                 fields = {}
+                state_schema_error = str(exc)
             turns.append(replace(turn, state_schema_valid=bool(fields), state_fields=fields,
+                                 state_schema_error=state_schema_error,
                                  action_grammar_valid=action_grammar_valid(turn.parsed.action, skillset)))
         return turns
 

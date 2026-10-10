@@ -44,7 +44,10 @@ from ctrlg_alfworld.provenance import (
     source_tree_sha256,
 )
 from ctrlg_alfworld.skills import SkillSet
-from ctrlg_alfworld.collection import executable_attempt, observed_attempt_span, ROLLOUT_SAMPLE_FORMAT
+from ctrlg_alfworld.collection import (
+    COLLECTION_EXECUTION_POLICY, ROLLOUT_SAMPLE_FORMAT,
+    executable_attempt, observed_attempt_span,
+)
 from ctrlg_alfworld.hmm_context import HMM_SEQUENCE_FORMAT
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +60,7 @@ RESUME_COMPATIBILITY_FIELDS = (
     "num_episodes",
     "sampling_policy",
     "rollout_sample_format", "collection_max_attempts",
+    "collection_execution_policy",
     "prompt_format",
     "schema_version",
     "policy_version",
@@ -615,7 +619,7 @@ def prepare_output_paths(
 
 
 def select_advance_turn(sampled_turns):
-    """Return the first structurally executable sample, without oracle filtering."""
+    """Return the first complete valid action, regardless of state quality."""
 
     return next(
         (
@@ -782,7 +786,8 @@ def main():
         "tokenizer": args.tokenizer or args.model,
         "split": args.split,
         "num_episodes": args.num_episodes,
-        "sampling_policy": "unmasked_all_attempts_bounded_structural_retry",
+        "sampling_policy": "unmasked_all_attempts_bounded_action_retry",
+        "collection_execution_policy": COLLECTION_EXECUTION_POLICY,
         "prompt_format": PROMPT_FORMAT,
         "schema_version": skillset.schema_version,
         "policy_version": skillset.policy_version,
@@ -966,6 +971,14 @@ def main():
                             "action_was_admissible": action_was_admissible,
                             "parse_ok": turn.parsed.parse_ok,
                             "parse_errors": list(turn.parsed.errors),
+                            "state_schema_valid": turn.state_schema_valid,
+                            "state_schema_error": turn.state_schema_error,
+                            "action_grammar_valid": turn.action_grammar_valid,
+                            "used_state_repair": turn.used_state_repair,
+                            "state_truncated": turn.state_truncated,
+                            "execution_rejection_reasons": span["execution_rejection_reasons"],
+                            "selected_for_execution": span["selected_for_execution"],
+                            "hmm_action_exclusion_reason": span["hmm_action_exclusion_reason"],
                             "state_attempts": turn.state_attempts,
                             "state_retry_used": turn.state_retry_used,
                             "state_failure_reasons": list(
@@ -1017,9 +1030,13 @@ def main():
                         "tail_token_ids": list(turn.tail_token_ids),
                         "parse_ok": turn.parsed.parse_ok,
                         "parse_errors": list(turn.parsed.errors),
+                        "state_schema_valid": turn.state_schema_valid,
+                        "state_schema_error": turn.state_schema_error,
+                        "action_grammar_valid": turn.action_grammar_valid,
                         "used_head_repair": turn.used_head_repair,
                         "used_thought_repair": turn.used_thought_repair,
                         "used_state_repair": turn.used_state_repair,
+                        "synthetic_state_close_token_ids": list(turn.synthetic_state_close_token_ids),
                         "head_stop_found": turn.head_stop_found,
                         "head_truncated": turn.head_truncated,
                         "thought_stop_found": turn.thought_stop_found,
