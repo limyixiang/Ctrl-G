@@ -4,7 +4,7 @@ import re
 import torch
 from transformers import AutoTokenizer
 
-data_dir = Path("results/alfworld/hmm_data_9b")  # change this
+data_dir = Path("results/alfworld/hmm_context_data_9b_k4_b1024_v1")  # change this
 meta_path = next(data_dir.glob("*.metadata.json"))
 meta = json.loads(meta_path.read_text())
 

@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --gres=gpu:h100-96:1
+#SBATCH --gres=gpu:h100-47:1
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
@@ -42,4 +42,7 @@ python ctrlg-alfworld/scripts/build_hmm_data.py \
   --seed "$SEED" \
   --save_embeddings
 
-# HMM_CONTEXT_STEPS=3 SAMPLES=results/alfworld/9b_context_rollout_v1/samples.jsonl sbatch -J alfworld-lvd-9b-k3 ctrlg-alfworld/slurm/build_hmm_data.sh
+# MODEL='Qwen/Qwen3.5-9B' HMM_CONTEXT_STEPS=4 SAMPLES=results/alfworld/9b_context_rollout_v1/samples.jsonl HISTORY= sbatch -J alfworld-lvd-9b-k4 ctrlg-alfworld/slurm/build_hmm_data.sh
+# MODEL='Qwen/Qwen3.5-9B' HMM_CONTEXT_STEPS=8 SAMPLES=results/alfworld/9b_context_rollout_v1/samples.jsonl HISTORY= sbatch -J alfworld-lvd-9b-k8 ctrlg-alfworld/slurm/build_hmm_data.sh
+# MODEL='Qwen/Qwen3.5-4B' HMM_CONTEXT_STEPS=4 SAMPLES=results/alfworld/4b_context_rollout_v1/samples.jsonl HISTORY= sbatch -J alfworld-lvd-4b-k4 ctrlg-alfworld/slurm/build_hmm_data.sh
+# MODEL='Qwen/Qwen3.5-4B' HMM_CONTEXT_STEPS=8 SAMPLES=results/alfworld/4b_context_rollout_v1/samples.jsonl HISTORY= sbatch -J alfworld-lvd-4b-k8 ctrlg-alfworld/slurm/build_hmm_data.sh

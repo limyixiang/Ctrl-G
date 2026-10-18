@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --gres=gpu:h100-96:1
+#SBATCH --gres=gpu:h100-47:1
 #SBATCH -o logs/%x_%A_%a.out
 #SBATCH -e logs/%x_%A_%a.err
 #SBATCH --mail-type=END,FAIL
@@ -30,7 +30,7 @@ OUTPUT=${OUTPUT:-results/alfworld/pair_${SLURM_ARRAY_JOB_ID}}
 EPISODES=${EPISODES:-134}
 BEAM_SIZE=${BEAM_SIZE:-1}
 SEED=${SEED:-42}
-CONDITIONS=(state_prompt state_ctrlg)
+CONDITIONS=(state_ctrlg state_prompt)
 CONDITION=${CONDITIONS[$SLURM_ARRAY_TASK_ID]}
 HMM_ARGS=()
 if [[ "$CONDITION" == "state_ctrlg" ]]; then
@@ -49,5 +49,7 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --seed "$SEED" \
   --out "$OUTPUT"
 
-# MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_context_model_9b_v1/checkpoint-112' OUTPUT='results/alfworld/pair_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
-# MODEL='Qwen/Qwen3.5-4B' HMM='results/alfworld/hmm_context_model_4b_v1/checkpoint-112' OUTPUT='results/alfworld/pair_4b' sbatch --dependency=afterok:907490 ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_context_model_9b_k4_v1/checkpoint-112' OUTPUT='results/alfworld/pair_9b_k4' HMM_CONTEXT_STEPS=4 sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_context_model_9b_k8_v1/checkpoint-112' OUTPUT='results/alfworld/pair_9b_k8' HMM_CONTEXT_STEPS=8 sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-4B' HMM='results/alfworld/hmm_context_model_4b_k4_v1/checkpoint-112' OUTPUT='results/alfworld/pair_4b_k4' HMM_CONTEXT_STEPS=4 sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-4B' HMM='results/alfworld/hmm_context_model_4b_k8_v1/checkpoint-112' OUTPUT='results/alfworld/pair_4b_k8' HMM_CONTEXT_STEPS=8 sbatch ctrlg-alfworld/slurm/eval_grid.sh

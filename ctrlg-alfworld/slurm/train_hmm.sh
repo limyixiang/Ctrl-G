@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -J alfworld-hmm
 #SBATCH -p gpu-long
-#SBATCH -t 12:00:00
+#SBATCH -t 24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --gres=gpu:h100-96:1
+#SBATCH --gres=gpu:h100-47:1
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.err
 #SBATCH --mail-type=END,FAIL
@@ -110,5 +110,7 @@ python ctrlg-alfworld/scripts/evaluate_hmm_fit.py \
   --batch-size "$BATCH_SIZE" \
   --out "$OUTPUT/held_out_fit.json"
 
-# DATA_DIR=results/alfworld/hmm_context_data_9b_k1_b1024_v1 MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_context_model_9b_v1 RESUME_CHECKPOINT=32 EM_SCHEDULE='10,8' sbatch ctrlg-alfworld/slurm/train_hmm.sh
-# DATA_DIR=results/alfworld/hmm_context_data_4b_k1_b1024_v1 MODEL=Qwen/Qwen3.5-4B OUTPUT=results/alfworld/hmm_context_model_4b_v1 sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_context_data_9b_k4_b1024_v1 MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_context_model_9b_k4_v1 sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_context_data_9b_k8_b1024_v1 MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/hmm_context_model_9b_k8_v1 sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_context_data_4b_k4_b1024_v1 MODEL=Qwen/Qwen3.5-4B OUTPUT=results/alfworld/hmm_context_model_4b_k4_v1 sbatch ctrlg-alfworld/slurm/train_hmm.sh
+# DATA_DIR=results/alfworld/hmm_context_data_4b_k8_b1024_v1 MODEL=Qwen/Qwen3.5-4B OUTPUT=results/alfworld/hmm_context_model_4b_k8_v1 sbatch ctrlg-alfworld/slurm/train_hmm.sh
