@@ -1,6 +1,45 @@
+# Skill2Act: User-Guided Robot Decision-Making through Constrained State and Action Generation
+
+Skill2Act investigates how users or programmers can guide language-model-based
+decision-making through structured specifications embedded in a `SKILLS.md`
+document. The project builds on Ctrl-G to apply supported user-defined constraints
+during the generation of task-relevant state representations and corresponding
+actions.
+
+## Project objective
+
+The objective is to develop and evaluate a framework that connects user-editable
+specifications to constraints enforced during generation. The specifications define
+state schemas, action templates, and state-dependent behavioural rules. The
+framework first generates a state representation under schema constraints, then
+uses that generated state and the declared policies to compile constraints for
+action generation.
+
+The current prototype is in [`ctrlg-alfworld/`](ctrlg-alfworld/README.md). Its
+machine-readable specification is
+[`ctrlg-alfworld/templates/SKILLS.md`](ctrlg-alfworld/templates/SKILLS.md).
+
+## Evaluation scope
+
+Evaluation uses **ALFWorld's text-based (TextWorld) environment**, with textual
+observations and action commands. The project studies high-level decision-making
+relevant to robotics; physical robot deployment, visual perception, and low-level
+motion control are outside the current scope.
+
+The evaluation compares prompt-only guidance with constrained state and action
+generation using the same task instructions and skill document. It measures
+state-schema validity, action-grammar validity, policy adherence and fallback,
+action admissibility, task success, latency, and generated tokens.
+
+Constraints enforce supported output formats and rules evaluated against the
+generated state. They do not verify that the state matches the environment. Rule
+adherence and environment performance are therefore assessed separately. Supported
+rules, priority handling, and fallback behaviour are described in the
+[prototype documentation](ctrlg-alfworld/README.md#skill-contract).
+
 ## Ctrl-G: Logically-constrained LLM inference
 
-This repository hosts the code for the **Ctrl-G** framework proposed in the paper [_Adaptable Logical Control for Large Language Models_](https://arxiv.org/abs/2406.13892). Ctrl-G combines any production-ready LLM with a Hidden Markov Model (HMM), enabling LLM outputs to adhere to logical constraints represented as deterministic finite automata (DFAs).
+The underlying **Ctrl-G** framework was introduced in the paper [_Adaptable Logical Control for Large Language Models_](https://arxiv.org/abs/2406.13892). Ctrl-G combines any production-ready LLM with a Hidden Markov Model (HMM), enabling LLM outputs to adhere to logical constraints represented as deterministic finite automata (DFAs). The original framework documentation follows.
 
 <p align="center">
 <img src="https://web.cs.ucla.edu/~hzhang19/files/ctrlg_figures/teaser_figure.png" width="350"/>

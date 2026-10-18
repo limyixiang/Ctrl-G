@@ -1,4 +1,36 @@
-# Ctrl-G on ALFWorld
+# Skill2Act: ALFWorld TextWorld Prototype
+
+This package implements the ALFWorld prototype for
+[Skill2Act: User-Guided Robot Decision-Making through Constrained State and Action Generation](../README.md).
+The project investigates how users or programmers can express supported
+constraints in a `SKILLS.md` document and enforce them during language-model-based
+state and action generation using Ctrl-G.
+
+## Objective and scope
+
+The objective is to connect user-editable state schemas, action templates, and
+state-dependent behavioural rules to generation constraints. In the constrained
+condition, each decision follows this sequence:
+
+1. Read the task, skill document, and observation/action history.
+2. Generate a structured state representation under the declared state schema.
+3. Compile action constraints from the generated state and applicable policy rules.
+4. Generate an action under those constraints and execute it in the environment.
+
+Evaluation uses **ALFWorld's text-based (TextWorld) environment**, configured as
+`AlfredTWEnv`, with textual observations and action commands. It investigates
+high-level decision-making relevant to robotics. Physical robot deployment,
+visual perception, and low-level motion control are outside the current scope.
+
+Enforcement applies to supported machine-readable specifications; free-form
+instructions are also provided to the model as prompt guidance. A schema-valid
+state can still describe the environment incorrectly, so an action that follows
+the rules for that generated state can still fail in the environment. Evaluation
+therefore reports schema validity, policy adherence, action admissibility, and
+task success separately. Policy priorities and fallback behaviour are documented
+in the [skill contract](#skill-contract).
+
+## Evaluation design
 
 This package evaluates one matched pair using the same prompt construction,
 complete action/observation history, and byte-identical `templates/SKILLS.md`:
@@ -170,21 +202,28 @@ Start fresh data and checkpoint directories:
 MODEL=Qwen/Qwen3.5-9B OUTPUT=results/alfworld/9b_context_rollout_v1 \
   sbatch ctrlg-alfworld/slurm/collect_hmm_samples.sh
 
-MODEL=Qwen/Qwen3.5-9B SAMPLES=results/alfworld/9b_context_rollout_v1/samples.jsonl \
-  HMM_CONTEXT_STEPS=1 MAX_HMM_CONTEXT_TOKENS=1024 \
-  OUTPUT=results/alfworld/hmm_context_data_9b_k1_b1024_v1 \
-  sbatch ctrlg-alfworld/slurm/build_hmm_data.sh
+bash ctrlg-alfworld/slurm/build_hmm_data.sh 9B 1
 
 # Reuse the same raw rollouts with a different history window.
-MODEL=Qwen/Qwen3.5-9B SAMPLES=results/alfworld/9b_context_rollout_v1/samples.jsonl \
-  HMM_CONTEXT_STEPS=3 MAX_HMM_CONTEXT_TOKENS=1024 \
-  OUTPUT=results/alfworld/hmm_context_data_9b_k3_b1024_v1 \
-  sbatch ctrlg-alfworld/slurm/build_hmm_data.sh
+bash ctrlg-alfworld/slurm/build_hmm_data.sh 9B 3
 
 MODEL=Qwen/Qwen3.5-9B DATA_DIR=results/alfworld/hmm_context_data_9b_k1_b1024_v1 \
   OUTPUT=results/alfworld/hmm_context_model_9b_v1 \
   sbatch ctrlg-alfworld/slurm/train_hmm.sh
 ```
+
+The build script takes the model size (case insensitive, default `9B`) and
+HMM context steps (default `1`), then submits itself with `sbatch`. For example,
+`bash ctrlg-alfworld/slurm/build_hmm_data.sh 4B 8` uses `Qwen/Qwen3.5-4B`,
+reads `results/alfworld/4b_context_rollout_v1/samples.jsonl` and its sibling
+`history.jsonl`, and writes `results/alfworld/hmm_context_data_4b_k8_b1024_v1`.
+Its job name is `alfworld-lvd-4b-k8-b1024`, with logs in
+`logs/alfworld-lvd-4b-k8-b1024_JOB_ID.{out,err}`. Use `bash` for automatic
+job/log naming. Environment overrides remain available for `MODEL`,
+`MODEL_SIZE`, `HMM_CONTEXT_STEPS`, `SAMPLES`, `HISTORY`, `OUTPUT`, `JOB_NAME`,
+and `MAX_HMM_CONTEXT_TOKENS`; the token budget also appears in output and job names.
+An explicit `MODEL` takes precedence over the model size, and names follow its
+trailing size (for example, `Qwen/Qwen3.5-4B` gives `4b`).
 
 Submit each stage after the prior stage completes, or use a Slurm
 `--dependency=afterok:JOB_ID`. The build stage keeps all observed attempts and

@@ -12,7 +12,7 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=e1121685@u.nus.edu
 
-# Compatibility single-condition launcher. For the matched two-condition
+# Compatibility single-condition launcher. For the k=8, k=4, and prompt-only
 # array use ctrlg-alfworld/slurm/eval_grid.sh.
 #
 #   sbatch ctrlg-alfworld/slurm/alfworld_eval.sh state_prompt 20 50
