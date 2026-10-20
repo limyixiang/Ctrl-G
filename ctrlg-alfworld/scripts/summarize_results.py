@@ -1,6 +1,8 @@
-"""Validate and summarize prompt-only versus policy-constrained Ctrl-G.
+"""Validate and summarize the shared-baseline grid from slurm/eval_grid.sh.
 
-python ctrlg-alfworld/scripts/summarize_results.py --results results/alfworld/pair_4b --out results/alfworld/pair_4b/paired_summary.json
+python ctrlg-alfworld/scripts/summarize_results.py --results results/alfworld/grid_4b --out results/alfworld/grid_4b/grid_summary.json
+
+Legacy flat, two-condition result directories are also supported.
 """
 
 import argparse
@@ -13,6 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ctrlg_alfworld.experiment import condition_choices, get_condition
 from ctrlg_alfworld.prompts import PROMPT_FORMAT
 from ctrlg_alfworld.hmm_context import HMM_CONTEXT_FORMAT, HMM_SEQUENCE_FORMAT
+
+
+# Directory name: (evaluation condition, expected HMM context length).
+GRID_ARMS = {
+    "k8": ("state_ctrlg", 8),
+    "k4": ("state_ctrlg", 4),
+    "prompt_only": ("state_prompt", None),
+}
 
 
 COMPARABILITY_FIELDS = (
@@ -28,7 +38,11 @@ COMPARABILITY_FIELDS = (
 )
 
 
-def validate_comparable(summaries: dict[str, dict]) -> None:
+def validate_comparable(
+    summaries: dict[str, dict], *, hmm_context_steps: int | None = None
+) -> None:
+    """Validate a pair, allowing the grid's specified HMM context length."""
+
     conditions = condition_choices()
     baseline = summaries["state_prompt"]
     problems = []
@@ -41,6 +55,8 @@ def validate_comparable(summaries: dict[str, dict]) -> None:
         if missing:
             problems.append(f"{condition}: missing required fields {', '.join(missing)}")
             continue
+        if candidate.get("condition") != condition:
+            problems.append(f"{condition}: expected condition {condition!r}")
         expected = get_condition(condition)
         if candidate["prompt_format"] != PROMPT_FORMAT:
             problems.append(f"{condition}: expected prompt_format {PROMPT_FORMAT!r}")
@@ -59,11 +75,17 @@ def validate_comparable(summaries: dict[str, dict]) -> None:
 
     candidate = summaries["state_ctrlg"]
     for field in COMPARABILITY_FIELDS:
+        # The shared prompt-only baseline does not use HMM context. Each grid
+        # treatment must instead match its arm and its own checkpoint metadata.
+        if field == "hmm_context_steps" and hmm_context_steps is not None:
+            continue
         if candidate.get(field) != baseline.get(field):
             problems.append(
                 f"state_ctrlg: {field}={candidate.get(field)!r} differs "
                 f"from state_prompt={baseline.get(field)!r}"
             )
+    if hmm_context_steps is not None and candidate.get("hmm_context_steps") != hmm_context_steps:
+        problems.append(f"state_ctrlg: expected hmm_context_steps={hmm_context_steps}")
     if candidate.get("episode_gamefiles") != baseline.get("episode_gamefiles"):
         problems.append("state_ctrlg: ordered episode gamefiles differ")
     if baseline.get("hmm") is not None or baseline.get("hmm_sha256") is not None:
@@ -94,19 +116,53 @@ def validate_comparable(summaries: dict[str, dict]) -> None:
         )
 
 
+def validate_grid(summaries: dict[str, dict]) -> None:
+    missing = [arm for arm in GRID_ARMS if arm not in summaries]
+    if missing:
+        raise ValueError(f"missing grid arms: {', '.join(missing)}")
+    for arm, (condition, context_steps) in GRID_ARMS.items():
+        if condition == "state_prompt":
+            continue
+        try:
+            validate_comparable(
+                {"state_prompt": summaries["prompt_only"], condition: summaries[arm]},
+                hmm_context_steps=context_steps,
+            )
+        except ValueError as exc:
+            raise ValueError(f"{arm}: {exc}") from exc
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results", required=True)
+    parser.add_argument(
+        "--results", required=True,
+        help="Grid root containing k8/, k4/, and prompt_only/ (or a legacy pair directory)",
+    )
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+    root = Path(args.results)
+    is_grid = any((root / arm).is_dir() for arm in GRID_ARMS) or not any(
+        (root / f"summary_{condition}.json").is_file()
+        for condition in condition_choices()
+    )
+    paths = (
+        {arm: root / arm / f"summary_{condition}.json"
+         for arm, (condition, _) in GRID_ARMS.items()}
+        if is_grid else
+        {condition: root / f"summary_{condition}.json" for condition in condition_choices()}
+    )
     summaries = {}
-    for condition in condition_choices():
-        path = Path(args.results) / f"summary_{condition}.json"
+    for arm, path in paths.items():
         if not path.exists():
             raise FileNotFoundError(f"missing condition summary: {path}")
         with open(path) as input_file:
-            summaries[condition] = json.load(input_file)
-    validate_comparable(summaries)
+            summaries[arm] = json.load(input_file)
+    if is_grid:
+        validate_grid(summaries)
+    else:
+        validate_comparable(summaries)
+    baseline = "prompt_only" if is_grid else "state_prompt"
+    treatments = ("k8", "k4") if is_grid else ("state_ctrlg",)
 
     metric_names = (
         "success_rate", "admissibility_rate", "state_schema_validity_rate",
@@ -122,18 +178,14 @@ def main():
         condition: {
             metric: summaries[condition]["metrics"][metric] for metric in metric_names
         }
-        for condition in condition_choices()
+        for condition in summaries
     }
     output = {
-        "design": "matched two-condition comparison",
-        "estimand": "state_ctrlg minus state_prompt",
-        "validated_episode_manifest_sha256": summaries["state_prompt"][
+        "design": "matched three-arm grid comparison" if is_grid else "matched two-condition comparison",
+        "estimand": "each Ctrl-G arm minus prompt_only" if is_grid else "state_ctrlg minus state_prompt",
+        "validated_episode_manifest_sha256": summaries[baseline][
             "episode_manifest_sha256"
         ],
-        "hmm_artifact": {
-            "path": summaries["state_ctrlg"]["hmm"],
-            "sha256": summaries["state_ctrlg"]["hmm_sha256"],
-        },
         "conditions": table,
         "per_rule": {
             condition: {
@@ -144,13 +196,27 @@ def main():
                     "per_rule_violations", {}
                 ),
             }
-            for condition in condition_choices()
-        },
-        "ctrlg_effect": {
-            metric: table["state_ctrlg"][metric] - table["state_prompt"][metric]
-            for metric in metric_names
+            for condition in summaries
         },
     }
+    artifacts = {
+        arm: {"path": summaries[arm]["hmm"], "sha256": summaries[arm]["hmm_sha256"]}
+        for arm in treatments
+    }
+    effects = {
+        arm: {metric: table[arm][metric] - table[baseline][metric] for metric in metric_names}
+        for arm in treatments
+    }
+    if is_grid:
+        output["model"] = summaries[baseline]["model"]
+        output["hmm_artifacts"] = {
+            arm: {**artifacts[arm], "hmm_context_steps": summaries[arm]["hmm_context_steps"]}
+            for arm in treatments
+        }
+        output["ctrlg_effect"] = effects
+    else:
+        output["hmm_artifact"] = artifacts["state_ctrlg"]
+        output["ctrlg_effect"] = effects["state_ctrlg"]
     rendered = json.dumps(output, indent=2)
     if args.out:
         Path(args.out).write_text(rendered + "\n")
