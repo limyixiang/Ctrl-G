@@ -92,11 +92,11 @@ class SummaryTests(unittest.TestCase):
             path = directory / f"summary_{summary['condition']}.json"
             path.write_text(json.dumps(summary))
 
-    def run_main(self, root):
+    def run_main(self, root, *extra_args):
         output_path = root / "summary.json"
         stdout = io.StringIO()
         with patch.object(sys, "argv", [
-            str(SCRIPT), "--results", str(root), "--out", str(output_path),
+            str(SCRIPT), "--results", str(root), "--out", str(output_path), *extra_args,
         ]), redirect_stdout(stdout):
             module.main()
         output = json.loads(stdout.getvalue())
@@ -236,6 +236,56 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(set(output["conditions"]), {"state_ctrlg", "state_prompt"})
         self.assertEqual(output["hmm_artifact"], {"path": "h", "sha256": "hh"})
         self.assertEqual(output["ctrlg_effect"]["success_rate"], 0.0)
+
+    def test_source_mismatch_requires_override_and_records_hashes(self):
+        for arm in ("k8", "k4", "state_ctrlg"):
+            grid = arm != "state_ctrlg"
+            with self.subTest(arm=arm), tempfile.TemporaryDirectory() as directory:
+                values = grid_summaries() if grid else summaries()
+                values[arm]["source_tree_sha256"] = "different-source"
+                root = Path(directory)
+                self.write_summaries(root, values, grid=grid)
+                with self.assertRaisesRegex(ValueError, "source_tree_sha256"):
+                    self.run_main(root)
+                output = self.run_main(root, "--allow-source-mismatch")
+                self.assertEqual(output["source_tree_validation"], {
+                    "allow_source_mismatch": True,
+                    "matched": False,
+                    "sha256_by_arm": {
+                        name: summary["source_tree_sha256"]
+                        for name, summary in values.items()
+                    },
+                })
+
+    def test_source_override_with_matching_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_summaries(root, grid_summaries())
+            output = self.run_main(root, "--allow-source-mismatch")
+        self.assertTrue(output["source_tree_validation"]["matched"])
+
+    def test_source_override_preserves_other_checks(self):
+        for grid in (True, False):
+            for field, value, error in (
+                ("model", "other-model", "model"),
+                ("episode_gamefiles", ["b", "a"], "ordered episode gamefiles"),
+                ("hmm_provenance", {}, "HMM provenance"),
+                ("hmm_context_steps", 2, "hmm_context_steps"),
+            ):
+                with self.subTest(grid=grid, field=field):
+                    values = grid_summaries() if grid else summaries()
+                    arm = "k4" if grid else "state_ctrlg"
+                    values[arm]["source_tree_sha256"] = "different-source"
+                    values[arm][field] = value
+                    validate = module.validate_grid if grid else module.validate_comparable
+                    with self.assertRaisesRegex(ValueError, error):
+                        validate(values, allow_source_mismatch=True)
+
+    def test_source_override_still_requires_recorded_hash(self):
+        values = grid_summaries()
+        del values["k8"]["source_tree_sha256"]
+        with self.assertRaisesRegex(ValueError, "missing required fields source_tree_sha256"):
+            module.validate_grid(values, allow_source_mismatch=True)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@
 python ctrlg-alfworld/scripts/summarize_results.py --results results/alfworld/grid_4b --out results/alfworld/grid_4b/grid_summary.json
 
 Legacy flat, two-condition result directories are also supported.
+Use --allow-source-mismatch to permit differing recorded source hashes;
+all other validation remains enabled and the hashes are included in the output.
 """
 
 import argparse
@@ -39,7 +41,8 @@ COMPARABILITY_FIELDS = (
 
 
 def validate_comparable(
-    summaries: dict[str, dict], *, hmm_context_steps: int | None = None
+    summaries: dict[str, dict], *, hmm_context_steps: int | None = None,
+    allow_source_mismatch: bool = False,
 ) -> None:
     """Validate a pair, allowing the grid's specified HMM context length."""
 
@@ -79,6 +82,8 @@ def validate_comparable(
         # treatment must instead match its arm and its own checkpoint metadata.
         if field == "hmm_context_steps" and hmm_context_steps is not None:
             continue
+        if field == "source_tree_sha256" and allow_source_mismatch:
+            continue
         if candidate.get(field) != baseline.get(field):
             problems.append(
                 f"state_ctrlg: {field}={candidate.get(field)!r} differs "
@@ -116,7 +121,9 @@ def validate_comparable(
         )
 
 
-def validate_grid(summaries: dict[str, dict]) -> None:
+def validate_grid(
+    summaries: dict[str, dict], *, allow_source_mismatch: bool = False
+) -> None:
     missing = [arm for arm in GRID_ARMS if arm not in summaries]
     if missing:
         raise ValueError(f"missing grid arms: {', '.join(missing)}")
@@ -127,6 +134,7 @@ def validate_grid(summaries: dict[str, dict]) -> None:
             validate_comparable(
                 {"state_prompt": summaries["prompt_only"], condition: summaries[arm]},
                 hmm_context_steps=context_steps,
+                allow_source_mismatch=allow_source_mismatch,
             )
         except ValueError as exc:
             raise ValueError(f"{arm}: {exc}") from exc
@@ -139,6 +147,10 @@ def main():
         help="Grid root containing k8/, k4/, and prompt_only/ (or a legacy pair directory)",
     )
     parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--allow-source-mismatch", action="store_true",
+        help="Allow differing source_tree_sha256 values; retain all other checks and report the hashes",
+    )
     args = parser.parse_args()
     root = Path(args.results)
     is_grid = any((root / arm).is_dir() for arm in GRID_ARMS) or not any(
@@ -158,9 +170,9 @@ def main():
         with open(path) as input_file:
             summaries[arm] = json.load(input_file)
     if is_grid:
-        validate_grid(summaries)
+        validate_grid(summaries, allow_source_mismatch=args.allow_source_mismatch)
     else:
-        validate_comparable(summaries)
+        validate_comparable(summaries, allow_source_mismatch=args.allow_source_mismatch)
     baseline = "prompt_only" if is_grid else "state_prompt"
     treatments = ("k8", "k4") if is_grid else ("state_ctrlg",)
 
@@ -217,6 +229,15 @@ def main():
     else:
         output["hmm_artifact"] = artifacts["state_ctrlg"]
         output["ctrlg_effect"] = effects["state_ctrlg"]
+    if args.allow_source_mismatch:
+        source_hashes = {
+            arm: summary["source_tree_sha256"] for arm, summary in summaries.items()
+        }
+        output["source_tree_validation"] = {
+            "allow_source_mismatch": True,
+            "matched": len(set(source_hashes.values())) == 1,
+            "sha256_by_arm": source_hashes,
+        }
     rendered = json.dumps(output, indent=2)
     if args.out:
         Path(args.out).write_text(rendered + "\n")
