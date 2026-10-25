@@ -196,6 +196,16 @@ state/action NLL and paired task success. Checkpoint selection uses mean
 `log P(observed target | C_t)` per attempt; joint sequence likelihood is also
 reported as a diagnostic.
 
+The three-column training log (`checkpoint`, `train`, `dev`) now uses this same
+output-conditional score for both splits, including the initial checkpoint.
+Training evaluation uses the first `min(dev rows, train rows)` attempts in numeric
+chunk order, fixed across EM updates, resumes, seeds, and process counts for the
+same dataset. The header records the metric and actual evaluation counts. EM still
+fits joint sequence likelihood; joint held-out fit is reported by
+`evaluate_hmm_fit.py`. Both train and dev span files are required for conditional
+scoring. Legacy datasets without either file use explicitly labelled joint scores
+on both splits; old logs without metric headers retain their legacy labels.
+
 Start fresh data and checkpoint directories:
 
 ```bash

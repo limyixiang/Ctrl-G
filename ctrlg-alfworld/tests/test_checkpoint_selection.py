@@ -70,6 +70,34 @@ class CheckpointSelectionTests(unittest.TestCase):
 
             self.assertEqual(selection["best_checkpoint"], 16)
 
+    def test_score_definitions_are_scoped_to_latest_run(self):
+        conditional = "mean_output_conditional_log_likelihood_per_attempt"
+        joint = "mean_joint_log_likelihood_per_sequence"
+        for latest_marker, expected_metric in (
+            ("", "mean_dev_log_likelihood_per_sequence"),
+            (f"# dev_score={joint}\n", "mean_joint_dev_log_likelihood_per_sequence"),
+            (f"# dev_score={conditional}\n", "mean_output_conditional_dev_log_likelihood_per_attempt"),
+        ):
+            with self.subTest(latest_marker=latest_marker), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.make_checkpoint(root, 8)
+                self.make_checkpoint(root, 16)
+                log = root / "train.log"
+                log.write_text(
+                    "{'model_path': 'old', 'em_schedule': 'old'}\n"
+                    f"# train_score={conditional}\n# dev_score={conditional}\n"
+                    "8\t-1\t-1\n"
+                    "{'model_path': 'new', 'em_schedule': 'new'}\n"
+                    f"{latest_marker}"
+                    "8\t-10\t-30\n16\t-20\t-25\n",
+                    encoding="utf-8",
+                )
+                selection = select_best_checkpoint(log, root)
+                self.assertEqual(selection['best_checkpoint'], 16)  # dev beats train
+                self.assertEqual(selection['selection_metric'], expected_metric)
+                # Earlier train markers cannot label a legacy/mixed-metric run.
+                self.assertEqual(selection['score_definitions']['train'], 'unspecified_legacy_log_likelihood')
+
     def test_rejects_log_without_a_saved_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -18,53 +18,141 @@ def apply_dropout(input_ids, dropout, vocab_size, eos_token_id):
     return input_ids
 
 
+CONDITIONAL_SCORE = 'mean_output_conditional_log_likelihood_per_attempt'
+JOINT_SCORE = 'mean_joint_log_likelihood_per_sequence'
+
+
+def load_spans(path):
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding='utf-8') as source:
+        spans = json.load(source)
+    if not isinstance(spans, list):
+        raise ValueError(f'{path}: expected a list of spans')
+    return spans
+
+
+def validate_spans(data, spans, name):
+    """Check row alignment and observed lengths, including censored prefixes."""
+    if len(spans) != len(data):
+        raise ValueError(f'{name}: spans do not match tensor rows')
+    lengths, contexts = [], []
+    for span in spans:
+        length, context = span.get('length'), span.get('context_length')
+        if (type(length) is not int or type(context) is not int
+                or not 0 <= context <= length <= data.shape[1]):
+            raise ValueError(f'{name}: invalid observed/context length')
+        lengths.append(length)
+        contexts.append(context)
+    padding = torch.arange(data.shape[1])[None, :] >= torch.tensor(lengths)[:, None]
+    if not torch.equal(data == -2, padding):
+        raise ValueError(f'{name}: observed lengths do not match right padding')
+    return contexts
+
+
+def load_evaluation_data(data_path, dataset, total_chunks, sample_length=None):
+    """Use fixed dev rows and the first dev-sized subset in numeric chunk order.
+
+    The builder writes train.spans.json in that same flattened chunk order.
+    Read one chunk at a time so the full training set need not stay in memory.
+    """
+    if total_chunks < 1:
+        raise ValueError('total_chunks must be positive')
+    prefix = f'{data_path}/{dataset}'
+    train_spans = load_spans(f'{prefix}.train.spans.json')
+    dev_spans = load_spans(f'{prefix}.dev.spans.json')
+    if (train_spans is None) != (dev_spans is None):
+        raise ValueError('train and dev spans are both required for comparable conditional scores')
+    conditional = dev_spans is not None
+    if conditional and sample_length is not None:
+        raise ValueError('sample_length would censor versioned training data; use its observed lengths')
+    if sample_length is not None and sample_length < 1:
+        raise ValueError('sample_length must be positive')
+
+    dev_data = torch.load(f'{prefix}.dev', map_location='cpu')[:, :sample_length]
+    if not len(dev_data):
+        raise ValueError('development evaluation set is empty')
+    dev_contexts = validate_spans(dev_data, dev_spans, 'dev') if conditional else None
+    train_parts, train_contexts = [], [] if conditional else None
+    offset, selected = 0, 0
+    for index in range(total_chunks):
+        chunk = torch.load(f'{prefix}.train.{index}', map_location='cpu')
+        contexts = (validate_spans(chunk, train_spans[offset:offset + len(chunk)],
+                                   f'train chunk {index}') if conditional else None)
+        take = min(len(chunk), len(dev_data) - selected)
+        if take:
+            train_parts.append(chunk[:take, :sample_length].clone())
+            if conditional:
+                train_contexts.extend(contexts[:take])
+            selected += take
+        offset += len(chunk)
+    if conditional and offset != len(train_spans):
+        raise ValueError('train spans do not match total training rows')
+    if not selected:
+        raise ValueError('training evaluation set is empty')
+    train_data = nn.utils.rnn.pad_sequence(
+        [row for part in train_parts for row in part], batch_first=True, padding_value=-2)
+    return train_data, dev_data, train_contexts, dev_contexts
+
+
+def shard_evaluation_data(data, contexts, rank, world_size):
+    """Partition global evaluation rows exactly once, even with empty ranks."""
+    start, end = len(data) * rank // world_size, len(data) * (rank + 1) // world_size
+    return data[start:end], None if contexts is None else contexts[start:end]
+
+
+@torch.no_grad()
+def evaluation_scores(model, train_data, dev_data, train_contexts, dev_contexts, batch_size):
+    def score(data, contexts):
+        return (model.conditional_loglikelihood(data, contexts, batch_size)
+                if contexts is not None else model.loglikelihood(data, batch_size)).reshape(())
+
+    # Reduce sums and actual row counts, never averages of unequal rank means.
+    totals = torch.stack((score(train_data, train_contexts), score(dev_data, dev_contexts),
+                          model.alpha_exp.new_tensor(len(train_data)),
+                          model.alpha_exp.new_tensor(len(dev_data)))).to(torch.float64)
+    dist.all_reduce(totals, op=dist.ReduceOp.SUM)
+    return (totals[:2] / totals[2:]).tolist()
+
+
 def train_hmm(rank, world_size,
     model_path, checkpoint, save_per_step,
     data_path, dataset, total_chunks, batch_size, sample_length,
-    em_schedule, log_file, dropout, pseudocount):
+    em_schedule, log_file, dropout, pseudocount, device=None):
 
-    device = f'cuda:{rank}'
+    device = device or f'cuda:{os.environ.get("LOCAL_RANK", rank)}'
 
     hmm_model = HMM.from_pretrained(f'{model_path}/checkpoint-{checkpoint}', map_location='cpu').to(device)
     hidden_states, vocab_size, eos_token_id = hmm_model.hidden_states, hmm_model.vocab_size, hmm_model.eos_token_id
     eps_cuda = torch.tensor([1e-7], device=device)
 
-    dev_data = torch.load(f'{data_path}/{dataset}.dev')[:, :sample_length]
-    dev_size = dev_data.shape[0]
-    num_per_process = dev_data.shape[0] // world_size + 1
-    dev_start, dev_end = rank * num_per_process, min(dev_data.shape[0], (rank+1) * num_per_process)
-    dev_data = dev_data[dev_start:dev_end]
-    span_path = f'{data_path}/{dataset}.dev.spans.json'
-    context_lengths = None
-    if os.path.isfile(span_path):
-        with open(span_path) as source:
-            spans = json.load(source)
-        if len(spans) != dev_size:
-            raise ValueError("held-out spans do not match dev tensor")
-        context_lengths = [span["context_length"] for span in spans[dev_start:dev_end]]
-        if sample_length is not None:
-            raise ValueError("sample_length would censor versioned training data; use its observed lengths")
-    def dev_score():
-        return (hmm_model.conditional_loglikelihood(dev_data, context_lengths, batch_size)
-                if context_lengths is not None else hmm_model.loglikelihood(dev_data, batch_size))
+    train_eval, dev_data, train_contexts, dev_contexts = load_evaluation_data(
+        data_path, dataset, total_chunks, sample_length)
+    if rank == 0:
+        score_name = CONDITIONAL_SCORE if dev_contexts is not None else JOINT_SCORE
+        with open(log_file, 'a+', encoding='utf-8') as fout:
+            fout.write(f'# train_score={score_name}\n# dev_score={score_name}\n')
+            fout.write(f'# train_eval=first_rows_in_numeric_chunk_order; '
+                       f'train_eval_count={len(train_eval)}; dev_eval_count={len(dev_data)}\n')
+    train_eval, train_contexts = shard_evaluation_data(train_eval, train_contexts, rank, world_size)
+    dev_data, dev_contexts = shard_evaluation_data(dev_data, dev_contexts, rank, world_size)
+
+    def log_scores(checkpoint):
+        train_ll, dev_ll = evaluation_scores(
+            hmm_model, train_eval, dev_data, train_contexts, dev_contexts, batch_size)
+        if rank == 0:
+            msg = f'{checkpoint}\t{train_ll}\t{dev_ll}'
+            print(msg)
+            with open(log_file, 'a+', encoding='utf-8') as fout:
+                fout.write(msg + '\n')
 
     for _, step_size in em_schedule:
         assert step_size <= total_chunks
 
     step_offset = checkpoint
+    log_scores(checkpoint)
     for step_count, step_size in em_schedule:
         for step_idx in range(0, step_count):
-            # evaluate ll
-            if step_offset == checkpoint:
-                dev_ll = dev_score()
-                torch.distributed.all_reduce(dev_ll, op=dist.ReduceOp.SUM)
-                if rank == 0:
-                    dev_ll = dev_ll.item() / dev_size
-                    msg = f'{checkpoint}\t{-1.0}\t{dev_ll}'
-                    print(msg)
-                    with open(log_file, 'a+') as fout:
-                        fout.write(msg + '\n')
-
             # get train_step for current step
             train_step = torch.cat([torch.load(f'{data_path}/{dataset}.train.{idx % total_chunks}')
                 for idx in range(step_offset, step_offset+step_size)], dim=0)
@@ -72,9 +160,6 @@ def train_hmm(rank, world_size,
             # get train_data for current process
             num_per_process = train_step.shape[0] // world_size + 1
             train_data = train_step[rank * num_per_process: min(train_step.shape[0], (rank+1) * num_per_process)]
-            train_data_eval = train_data[:dev_data.shape[0]].clone()
-            train_eval_count = torch.tensor(float(len(train_data_eval)), device=device)
-            torch.distributed.all_reduce(train_eval_count, op=dist.ReduceOp.SUM)
             train_data = apply_dropout(train_data, dropout, vocab_size, eos_token_id)
 
             # compute flows for one em step
@@ -115,22 +200,10 @@ def train_hmm(rank, world_size,
                 gamma_flow.div_(torch.sum(gamma_flow, dim=0, keepdim=True)).log_()
                 hmm_model.update_params(alpha_flow, beta_flow, gamma_flow)
 
-                # evaluate ll
-                train_ll = hmm_model.loglikelihood(train_data_eval, batch_size)
-                dev_ll = dev_score()
-
-            torch.distributed.all_reduce(train_ll, op=dist.ReduceOp.SUM)
-            torch.distributed.all_reduce(dev_ll, op=dist.ReduceOp.SUM)
+            ckpt = step_offset + step_size
+            log_scores(ckpt)
 
             if rank == 0:
-                train_ll = train_ll.item() / max(float(train_eval_count), 1)
-                dev_ll = dev_ll.item() / dev_size
-                ckpt = step_offset + step_size
-                msg = f'{ckpt}\t{train_ll}\t{dev_ll}'
-                print(msg)
-                with open(log_file, 'a+') as fout:
-                    fout.write(msg + '\n')
-
                 if ckpt % save_per_step == 0 and ckpt != 0:
                     hmm_model.save_pretrained(f'{model_path}/checkpoint-{ckpt}')
 
@@ -164,9 +237,10 @@ if __name__ == '__main__':
 
     args = arg_parser.parse_args()
 
+    torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
     dist.init_process_group('nccl')
-    rank = int(os.environ["LOCAL_RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
     random.seed(args.seed + rank)
     torch.manual_seed(args.seed + rank)
     torch.cuda.manual_seed_all(args.seed + rank)
@@ -174,8 +248,6 @@ if __name__ == '__main__':
     if rank == 0:
         with open(args.log_file, 'a+') as fout:
             fout.write(str(vars(args)) + '\n')
-            if os.path.isfile(f'{args.data_path}/{args.dataset}.dev.spans.json'):
-                fout.write('# dev_score=mean_output_conditional_log_likelihood_per_attempt\n')
 
     em_schedule = [tuple([int(y) for y in x.split(',')]) for x in args.em_schedule.split(';') if x != '']
 

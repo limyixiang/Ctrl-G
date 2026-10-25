@@ -83,15 +83,29 @@ class HMM(nn.Module, PyTorchModelHubMixin):
 
     def conditional_loglikelihood(self, input_ids, prefix_lengths, batch_size=32):
         """Sum log P(observed output | context), excluding context likelihood."""
+        if input_ids.ndim != 2 or batch_size < 1:
+            raise ValueError('expected a sequence matrix and positive batch_size')
+        prefix_lengths = torch.as_tensor(prefix_lengths)
+        if prefix_lengths.ndim != 1 or len(prefix_lengths) != len(input_ids):
+            raise ValueError('prefix lengths must match input rows')
+        if len(prefix_lengths) and (prefix_lengths.dtype == torch.bool
+                or prefix_lengths.is_floating_point() or prefix_lengths.is_complex()):
+            raise ValueError('prefix lengths must be integers')
+        if ((prefix_lengths < 0) | (prefix_lengths > input_ids.shape[1])).any():
+            raise ValueError('prefix lengths are outside the sequence')
         device = self.alpha_exp.device
         total = torch.zeros((), device=device)
         for start in range(0, len(input_ids), batch_size):
             batch = input_ids[start:start + batch_size].to(device)
-            lengths = torch.as_tensor(prefix_lengths[start:start + batch_size], device=device)
+            lengths = prefix_lengths[start:start + batch_size].to(device)
+            output_mask = torch.arange(batch.shape[1], device=device)[None, :] >= lengths[:, None]
+            if ((batch == -2) & ~output_mask).any():
+                raise ValueError('context extends into sequence padding')
             prefix = batch.clone()
-            prefix[torch.arange(batch.shape[1], device=device)[None, :] >= lengths[:, None]] = -2
+            prefix[output_mask] = -2
             full_ll = self.forward(batch)[-1]
             prefix_ll = self.forward(prefix[:, :max(1, int(lengths.max()))])[-1]
+            prefix_ll = torch.where(lengths == 0, 0.0, prefix_ll) # P(empty context) = 1
             total += (full_ll - prefix_ll).sum()
         return total
 

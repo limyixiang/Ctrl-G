@@ -10,10 +10,11 @@ from pathlib import Path
 CHECKPOINT_DIRECTORY = re.compile(r"checkpoint-(\d+)$")
 
 
-def read_latest_log_likelihoods(path: str | Path) -> dict[int, dict[str, float]]:
-    """Read checkpoint metrics from the most recent run in a training log."""
+def _read_latest_log(path: str | Path) -> tuple[dict[int, dict[str, float]], dict[str, str]]:
+    """Read metrics and their definitions from the same, most recent run."""
 
     metrics: dict[int, dict[str, float]] = {}
+    score_definitions: dict[str, str] = {}
     with open(path, encoding="utf-8") as input_file:
         for raw_line in input_file:
             line = raw_line.strip()
@@ -25,7 +26,13 @@ def read_latest_log_likelihoods(path: str | Path) -> dict[int, dict[str, float]]
                 and "'model_path'" in line
             ):
                 metrics = {}
+                score_definitions = {}
                 continue
+
+            for split in ('train', 'dev'):
+                marker = f'# {split}_score='
+                if line.startswith(marker):
+                    score_definitions[split] = line[len(marker):]
 
             columns = line.split("\t")
             if len(columns) != 3:
@@ -45,7 +52,12 @@ def read_latest_log_likelihoods(path: str | Path) -> dict[int, dict[str, float]]
 
     if not metrics:
         raise ValueError(f"no checkpoint likelihood records found in {path}")
-    return metrics
+    return metrics, score_definitions
+
+
+def read_latest_log_likelihoods(path: str | Path) -> dict[int, dict[str, float]]:
+    """Read checkpoint metrics from the most recent run in a training log."""
+    return _read_latest_log(path)[0]
 
 
 def saved_checkpoint_steps(model_path: str | Path) -> set[int]:
@@ -65,7 +77,7 @@ def select_best_checkpoint(log_path: str | Path, model_path: str | Path) -> dict
 
     log_path = Path(log_path)
     model_path = Path(model_path)
-    metrics = read_latest_log_likelihoods(log_path)
+    metrics, score_definitions = _read_latest_log(log_path)
     saved_steps = saved_checkpoint_steps(model_path)
     candidates = [
         {
@@ -87,10 +99,16 @@ def select_best_checkpoint(log_path: str | Path, model_path: str | Path) -> dict
         key=lambda item: (item["dev_log_likelihood"], item["checkpoint"]),
     )
     return {
-        "selection_metric": ("mean_output_conditional_dev_log_likelihood_per_attempt"
-                             if "# dev_score=mean_output_conditional_log_likelihood_per_attempt"
-                             in log_path.read_text(encoding="utf-8")
-                             else "mean_dev_log_likelihood_per_sequence"),
+        "selection_metric": {
+            "mean_output_conditional_log_likelihood_per_attempt":
+                "mean_output_conditional_dev_log_likelihood_per_attempt",
+            "mean_joint_log_likelihood_per_sequence":
+                "mean_joint_dev_log_likelihood_per_sequence",
+        }.get(score_definitions.get('dev'), "mean_dev_log_likelihood_per_sequence"),
+        "score_definitions": {
+            split: score_definitions.get(split, 'unspecified_legacy_log_likelihood')
+            for split in ('train', 'dev')
+        },
         "selection_rule": "maximum; latest checkpoint breaks exact ties",
         "training_log": str(log_path.resolve()),
         "candidates": candidates,
