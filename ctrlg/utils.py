@@ -400,31 +400,21 @@ class ConstraintLogitsProcessor(LogitsProcessor):
         if singleton_edges:
             T_weights[singleton_edges] = beta[:, singleton_tokens].transpose(0, 1)
 
-        # initialize cache C -- the backward pass over the DFA, one layer per remaining token.
-        # C[t, v, i] = log P(the generation runs for exactly t more tokens, walking the DFA
-        # from state v into an accept state, and is then followed by the suffix | the HMM was
-        # in state i when it emitted the token that moved the DFA into v).
-        # C[0] is "stop now": only accept states are live,
+        # initialize cache C -- range sums of exact-length backward layers over the DFA.
+        # An exact-length layer L_t[v, i] = log P(the generation runs for exactly t more
+        # tokens, walking the DFA from state v into an accept state, and is then followed
+        # by the suffix | the HMM was in state i when it emitted the token that moved
+        # the DFA into v).
+        # L_0 is "stop now": only accept states are live,
         # and they inherit the suffix weight y from cache B (after one transition, since the
         # suffix starts at the following step).
         y_ = torch.full((num_states, hidden_states), neginf, device=device)
         y_[list(dfa_model.accept_states), :] = y
         y = matmul_loga_b(y_, alpha_exp_t) # num_states * hidden_states
 
-        # Each iteration prepends one more token: push the state weights out onto the edges
-        # that lead there (E2Dst), pay that edge's emission weight, sum the edges back into
-        # their source states (E2Src), then take one HMM transition backwards (alpha_exp_t).
-        C = torch.empty(max_tokens+1, num_states, hidden_states, device=device)
-        C[0, :, :] = y
-        for t in range(1, max_tokens+1):
-            y = distribute_state_weights(E2Dst, y) # num_transitions * hidden_states
-            y = aggregate_edge_weights(E2Src, T_weights + y, num_states=num_states) # num_states * hidden_states
-            y = matmul_loga_b(y, alpha_exp_t) # num_states * hidden_states
-            C[t, :, :] = y
-
         # precompute ranges for C_cache -- at decoding time the generation may still run for
         # anywhere between `remaining_min` and `remaining_max` tokens, so what is actually
-        # needed is C summed (in log space) over a contiguous range of layers. Enumerate the
+        # needed is the logsumexp over a contiguous range of exact-length layers. Enumerate the
         # (lo, hi) pairs reachable from each token_range: (i, i + max_ - min_) while fewer
         # than min_ tokens have been generated, then (0, i) once the minimum is met.
         ranges = set()
@@ -434,21 +424,37 @@ class ConstraintLogitsProcessor(LogitsProcessor):
                 ranges.add((i, i + max_tokens_ - min_tokens_))
             for i in range(max_tokens_ - min_tokens_ - 1, -1, -1):
                 ranges.add((0, i))
-        ranges = list(ranges)
-        range_mask = torch.zeros(len(ranges), max_tokens+1, device=device)
-        for idx, r in enumerate(ranges):
-            range_mask[idx, torch.arange(r[0], r[1]+1)] = 1.0
+        ranges = sorted(ranges)
+        C = torch.empty(len(ranges), num_states, hidden_states, device=device)
+        C_cache = {r: C[idx] for idx, r in enumerate(ranges)}
 
-        # One 0/1 row per range selects the layers of C it covers, so a single matmul in log
-        # space performs all the logsumexps at once: C_cache[(lo, hi)] = logsumexp of C[lo:hi+1].
-        C_shape = C.shape
-        C = matmul_a_logb(range_mask, torch.flatten(C, start_dim=1, end_dim=2)) # num_ranges * (num_states * hidden_states)
-        C = C.view(-1, C_shape[1], C_shape[2])
+        # Build the range sums directly into the final cache. Keeping every exact-length
+        # layer and reducing them in one matmul also needs a normalized copy of that stack,
+        # so three cache-sized tensors can be live at once. Instead, one running logsumexp
+        # per active lower bound summarizes the layers seen so far. Snapshot it whenever a
+        # requested upper bound is reached, and release it after its last requested range.
+        # The default [1, max_tokens] budget needs only two running state/hidden layers.
+        last_upper = {}
+        for lower, upper in ranges:
+            last_upper[lower] = max(last_upper.get(lower, upper), upper)
+        running = {}
+        for t in range(max_tokens+1):
+            if t > 0:
+                # Prepend one token: distribute destination weights onto edges, pay each
+                # edge's emission weight, aggregate at sources, then transition backwards.
+                y = distribute_state_weights(E2Dst, y)
+                y = aggregate_edge_weights(E2Src, T_weights + y, num_states=num_states)
+                y = matmul_loga_b(y, alpha_exp_t)
+            if t in last_upper:
+                running[t] = y
+            for lower in list(running):
+                if lower != t:
+                    running[lower] = torch.logaddexp(running[lower], y)
+                if (lower, t) in C_cache:
+                    C_cache[(lower, t)].copy_(running[lower])
+                if t == last_upper[lower]:
+                    del running[lower]
         C.nan_to_num_(neginf=neginf)
-
-        C_cache = {}
-        for idx, r in enumerate(ranges):
-            C_cache[r] = C[idx]
 
         # initialize cache D -- prefix tuple -> the DFA state it leads to; extended one
         # token at a time as generation proceeds.

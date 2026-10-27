@@ -312,6 +312,11 @@ tokenizer DFAs with an untrained small HMM; it does not measure task quality.
 At the default token budgets, the local Qwen tokenizer profile estimates
 about 12.3 GB for the state lookahead cache at 4096 hidden states, excluding
 model weights and temporary buffers.
+Lookahead construction accumulates length ranges incrementally into that final
+cache, retaining only the current backward layer and a running sum per active
+lower bound (two running sums at the default minimum length of one). It avoids
+the additional full layer stack and normalized copy previously needed by the
+range-reduction matrix multiplication.
 
 The CPU suite covers DSL rejection, all six schemas, exact two-target
 `puttwo` states including shared locations, character/token DFA behavior,

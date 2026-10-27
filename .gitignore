@@ -30,5 +30,6 @@ alfworld_data/
 
 *.egg-info/
 out/
+output/
 results/
 /ctrlg-alfworld/reports/
