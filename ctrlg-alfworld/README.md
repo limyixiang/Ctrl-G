@@ -269,9 +269,34 @@ python ctrlg-alfworld/scripts/summarize_results.py \
   --results results/alfworld/pair
 ```
 
-The paired summary reports Ctrl-G minus prompt-only deltas for success,
-post-hoc admissibility, state-schema validity, action-grammar validity,
-policy adherence/fallback, latency, and tokens. Step records include parsed
+The summary supports both a flat matched pair and the `k8/`, `k4/`, and
+`prompt_only/` grid. Each condition reports episode/success/failure counts,
+total actions and inadmissible actions, actions per episode, token totals and
+per-episode costs, generation latency, and constraint diagnostics. Ctrl-G minus
+prompt-only deltas remain in `ctrlg_effect`.
+
+When sibling `eval_<condition>.jsonl` files are available, the report also includes:
+
+- Mean, median, nearest-rank p90, minimum, and maximum action counts, separately
+  for all, successful, and failed episodes.
+- Success within 10, 20, 30, and `max_steps` actions (budgets above `max_steps`
+  are omitted). Each success rate uses all evaluated episodes as its denominator.
+- Failed episodes that reached the action limit and episodes containing an
+  inadmissible action. Reaching the limit is not treated as a recorded timeout.
+- Per-task success, action usage, and token/generation costs.
+- Paired Ctrl-G-only successes, baseline-only successes, joint successes/failures,
+  and action differences on episodes both methods solve.
+
+Generation latency is head plus action latency; head already includes thought
+and state generation. It excludes environment time and other overhead.
+Undefined averages/rates are `null`. Missing trace files leave
+`episode_details_available` false, `episode_statistics` and the affected
+`paired_comparisons` entries null, while retaining available aggregate metrics
+and per-task success counts. Present traces must match the summary's ordered
+manifest, episode/action/success counts, and success rate. The output retains
+the manifest hash but omits gamefile lists and full trajectories.
+
+Step records include parsed
 state fields, activated/shadowed rules, evaluability/satisfaction, HMM
 application/skip reason separately for state and action, context token count/shortening, and post-hoc admissibility. Summaries reject mismatched
 model, prompt settings, skills, episode manifest, policy version, or HMM
