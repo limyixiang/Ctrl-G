@@ -1,10 +1,12 @@
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from ctrlg_alfworld.agent_loop import parse_initial_observation, run_episode
 from ctrlg_alfworld.experiment import condition_choices, get_condition
 from ctrlg_alfworld.generation import TurnGeneration, parse_turn
-from ctrlg_alfworld.skills import SkillSet
+from ctrlg_alfworld.skills import PolicyRule, SkillSet
 
 
 class CharacterTokenizer:
@@ -103,6 +105,32 @@ class AgentLoopTests(unittest.TestCase):
             self.assertNotIn("decision_fields", saved)
             prompts.append(backend.prompt_texts[0])
         self.assertEqual(prompts[0].encode(), prompts[1].encode())
+
+    def test_prompt_arm_records_rejected_requirements(self):
+        state = STATE.replace("previous_action: none", "previous_action: open countertop 1").replace(
+            "arrived_receptacle_state: open", "arrived_receptacle_state: closed",
+        )
+        with patch(f"{__name__}.STATE", state):
+            record = run_episode(OneStepEnvironment(), FakeBackend(), self.skills, "state_prompt")
+        saved = record.to_dict()["steps"][0]
+        self.assertEqual(saved["rejected_required_policies"],
+                         {"open_declared_closed_receptacle": "forbidden_by_restrictions"})
+        self.assertTrue(saved["state_schema_valid"])
+        self.assertTrue(saved["policy_evaluable"])
+
+    def test_prompt_arm_keeps_valid_state_when_policy_language_is_empty(self):
+        policies = tuple(PolicyRule(
+            f"ban_{action.name}", 1, 90, (),
+            {"forbid_action": {"action": action.name, "bindings": {}}},
+        ) for action in self.skills.actions)
+        skills = replace(self.skills, policies=policies)
+        record = run_episode(OneStepEnvironment(), FakeBackend(), skills, "state_prompt")
+        saved = record.to_dict()["steps"][0]
+        self.assertTrue(saved["state_schema_valid"])
+        self.assertEqual(saved["state_fields"]["held"], "none")
+        self.assertFalse(saved["policy_evaluable"])
+        self.assertIsNone(saved["policy_satisfied"])
+        self.assertIn("empty_restricted_language", saved["policy_fallback_reason"])
 
 
 if __name__ == "__main__":

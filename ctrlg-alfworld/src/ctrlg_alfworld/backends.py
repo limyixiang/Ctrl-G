@@ -763,8 +763,7 @@ class HFBackend(BaseBackend):
             self._action_dfa_cache = OrderedDict()
         policy_key = (
             getattr(self.tokenizer, "name_or_path", type(self.tokenizer).__name__),
-            skillset.content_sha256, policy.required_action, policy.forbidden_action,
-            policy.take_type, policy.fallback_reason, self.vocab_size,
+            skillset.content_sha256, policy.cache_key, self.vocab_size,
         )
         action_graph = self._action_dfa_cache.get(policy_key)
         if action_graph is None:
@@ -880,6 +879,7 @@ class HFBackend(BaseBackend):
             action_grammar_valid=action_grammar_valid(parsed.action, skillset),
             activated_policies=policy.activated,
             shadowed_policies=policy.shadowed,
+            rejected_required_policies=policy.rejected_required_policies,
             policy_evaluable=policy.evaluable,
             policy_satisfied=policy_satisfied(parsed.action, policy),
             policy_fallback_reason=policy.fallback_reason,

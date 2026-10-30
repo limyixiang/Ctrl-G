@@ -163,6 +163,63 @@ class BackendIntegrationTests(unittest.TestCase):
         rank.assert_not_called()
         self.assertEqual(chunk.text, "look</action>")
 
+    def test_action_dfa_cache_tracks_held_object_and_current_location(self):
+        from ctrlg_alfworld.constraints import dfa_accepts
+
+        tokenizer = CharacterTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer, backend.vocab_size, backend.device = tokenizer, len(tokenizer), "cpu"
+        backend.hmm_model = object()
+        backend.cfg = GenConfig(max_action_tokens=32)
+        occupied = STATE.replace("held: none", "held: cup 1").replace("held_relation: none", "held_relation: unknown")
+        states = iter([STATE, occupied, occupied.replace("at: countertop 1", "at: countertop 2"), STATE])
+
+        def head(*args, **kwargs):
+            return BaseBackend._assemble_head(
+                backend, chunk("reason</think>", tokenizer),
+                chunk(next(states) + "</state>", tokenizer), use_state=True,
+            )
+
+        backend._strict_head = head
+        graphs = []
+
+        def generate(prompt, graph, prefix):
+            graphs.append(graph)
+            return chunk("inventory</action>", tokenizer)
+
+        backend._generate_hmm_span = generate
+        for _ in range(4):
+            HFBackend.generate_turn(backend, "P", self.skills, "put", constrained=True,
+                                    hmm_context=SimpleNamespace(token_ids=(), truncated=False))
+        take = tokenizer.encode("take cup 1 from countertop 1</action>")
+        goto = tokenizer.encode("go to countertop 1</action>")
+        self.assertTrue(dfa_accepts(graphs[0], take))
+        self.assertFalse(dfa_accepts(graphs[1], take))
+        self.assertFalse(dfa_accepts(graphs[1], goto))
+        self.assertTrue(dfa_accepts(graphs[2], goto))
+        self.assertIs(graphs[0], graphs[3])
+        self.assertEqual(len(backend._action_dfa_cache), 3)
+
+    def test_rejected_required_policy_is_preserved_in_generated_turn(self):
+        tokenizer = CharacterTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer, backend.vocab_size, backend.device = tokenizer, len(tokenizer), "cpu"
+        backend.hmm_model = object()
+        backend.cfg = GenConfig(max_action_tokens=32)
+        state = STATE.replace("previous_action: look", "previous_action: open countertop 1").replace(
+            "arrived_receptacle_state: open", "arrived_receptacle_state: closed",
+        )
+        head = BaseBackend._assemble_head(backend, chunk("reason</think>", tokenizer),
+                                         chunk(state + "</state>", tokenizer), use_state=True)
+        backend._strict_head = lambda *args, **kwargs: head
+        backend._generate_hmm_span = lambda *args: chunk("inventory</action>", tokenizer)
+        turn = HFBackend.generate_turn(backend, "P", self.skills, "put", constrained=True,
+                                       hmm_context=SimpleNamespace(token_ids=(), truncated=False))
+        self.assertEqual(turn.rejected_required_policies,
+                         {"open_declared_closed_receptacle": "forbidden_by_restrictions"})
+        self.assertIn("do_not_repeat_declared_previous_action", turn.activated_policies)
+        self.assertTrue(turn.policy_satisfied)
+
     def test_vllm_sends_structured_regex_and_preserves_token_ids(self):
         tokenizer = CharacterTokenizer()
         backend = object.__new__(VLLMBackend)

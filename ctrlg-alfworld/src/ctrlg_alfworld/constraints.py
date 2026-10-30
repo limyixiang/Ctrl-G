@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import interegular
@@ -19,7 +19,7 @@ import yaml
 from interegular.fsm import anything_else
 
 from .prompts import ACTION_CLOSE, STATE_CLOSE
-from .skills import StateSchema, PLACEHOLDER_RE, PolicyRule, SkillSet
+from .skills import Action, StateSchema, PLACEHOLDER_RE, PolicyRule, SkillSet
 
 ATOM_PATTERN = r"[a-z]+"
 ENTITY_PATTERN = r"[a-z]+ [1-9][0-9]*"
@@ -41,23 +41,33 @@ def _choice(patterns: Sequence[str]) -> str:
     return "(?:" + "|".join(patterns) + ")"
 
 
+def _action_template_pattern(
+    action: Action, *, bindings: dict[str, str] | None = None,
+    take_type: str | None = None,
+) -> str:
+    bindings = bindings or {}
+    cursor = 0
+    pieces: list[str] = []
+    for match in PLACEHOLDER_RE.finditer(action.template):
+        pieces.append(_literal(action.template[cursor : match.start()]))
+        placeholder = match.group(1)
+        if placeholder in bindings:
+            pieces.append(_literal(bindings[placeholder]))
+        elif action.name == "take" and placeholder == "obj" and take_type:
+            pieces.append(_literal(take_type) + r" [1-9][0-9]*")
+        else:
+            pieces.append(ENTITY_PATTERN)
+        cursor = match.end()
+    pieces.append(_literal(action.template[cursor:]))
+    return "".join(pieces)
+
+
 def action_body_pattern(skillset: SkillSet, *, take_type: str | None = None) -> str:
-    """Builds one regex describing every action allowed by the action templates in skills.md"""
-    patterns = []
-    for action in skillset.actions:
-        template = action.template
-        cursor = 0
-        pieces: list[str] = []
-        for match in PLACEHOLDER_RE.finditer(template):
-            pieces.append(_literal(template[cursor : match.start()]))
-            if action.name == "take" and match.group(1) == "obj" and take_type:
-                pieces.append(_literal(take_type) + r" [1-9][0-9]*")
-            else:
-                pieces.append(ENTITY_PATTERN)
-            cursor = match.end()
-        pieces.append(_literal(template[cursor:]))
-        patterns.append("".join(pieces))
-    return _choice(patterns)
+    """Build the generic grammar without state-dependent policy restrictions."""
+    return _choice([
+        _action_template_pattern(action, take_type=take_type)
+        for action in skillset.actions
+    ])
 
 
 def _schema_node_pattern(node: dict[str, Any], skillset: SkillSet) -> str:
@@ -414,7 +424,17 @@ def _condition_matches(condition: dict[str, Any], state: dict[str, Any]) -> bool
         return value not in condition["not_in"]
     if "is_type" in condition:
         return isinstance(value, str) and re.fullmatch(ENTITY_PATTERN, value) is not None
+    for operator in ("equals_field", "not_equals_field"):
+        if operator in condition:
+            other = state.get(condition[operator])
+            if value is None or other is None or value == "unknown" or other == "unknown":
+                return False
+            return value == other if operator == "equals_field" else value != other
     raise ValueError("unsupported policy condition")
+
+
+class PolicyCompilationError(ValueError):
+    """Restrictions cannot be evaluated safely or leave no permitted action."""
 
 
 @dataclass(frozen=True)
@@ -428,10 +448,20 @@ class PolicyCompilation:
     required_action: str | None = None
     forbidden_action: str | None = None
     take_type: str | None = None
+    restriction_signature: tuple[tuple[Any, ...], ...] = ()
+    rejected_required_policies: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def cache_key(self) -> tuple:
+        # pattern alone omits FSM subtraction; include every effective binding.
+        return self.restriction_signature, self.required_action
 
 
-def _bind_required_action(rule: PolicyRule, state: dict[str, Any], skillset: SkillSet) -> str:
-    spec = rule.effect["require_action"]
+def _resolve_action_bindings(
+    rule: PolicyRule, state: dict[str, Any], skillset: SkillSet,
+    *, allow_unknown: bool = False, allow_none: bool = False,
+) -> tuple[Action, dict[str, str]]:
+    spec = next(iter(rule.effect.values()))
     action_template = next(
         action for action in skillset.actions if action.name == spec["action"]
     )
@@ -440,9 +470,19 @@ def _bind_required_action(rule: PolicyRule, state: dict[str, Any], skillset: Ski
         if placeholder not in action_template.placeholders:
             raise ValueError(f"policy {rule.name} binds unknown placeholder {placeholder}")
         value = state.get(field_name)
-        if not isinstance(value, str) or re.fullmatch(ENTITY_PATTERN, value) is None:
+        if allow_unknown and (value is None or value == "unknown"):
+            continue
+        if allow_none and value == "none":
+            values[placeholder] = value
+        elif isinstance(value, str) and re.fullmatch(ENTITY_PATTERN, value) is not None:
+            values[placeholder] = value
+        else:
             raise ValueError(f"policy {rule.name} cannot bind {field_name!r}")
-        values[placeholder] = value
+    return action_template, values
+
+
+def _bind_required_action(rule: PolicyRule, state: dict[str, Any], skillset: SkillSet) -> str:
+    action_template, values = _resolve_action_bindings(rule, state, skillset)
     if set(values) != set(action_template.placeholders):
         raise ValueError(f"policy {rule.name} does not bind every action placeholder")
     return action_template.template.format(**values)
@@ -451,65 +491,89 @@ def _bind_required_action(rule: PolicyRule, state: dict[str, Any], skillset: Ski
 def compile_policy_language(state: dict[str, Any], skillset: SkillSet) -> PolicyCompilation:
     generic_pattern = action_span_pattern(skillset)
     generic_fsm = regex_fsm(generic_pattern)
-    matching = [
+    matching = sorted([
         rule for rule in skillset.policies
         if all(_condition_matches(condition, state) for condition in rule.when)
-    ]
+    ], key=lambda rule: (-rule.priority, rule.name))
     required = [rule for rule in matching if "require_action" in rule.effect]
-    if required:
-        winner = required[0]
-        shadowed = tuple(rule.name for rule in matching if rule is not winner and rule.priority < winner.priority)
+    restrictions = [rule for rule in matching if "require_action" not in rule.effect]
+    allowed = generic_fsm
+    signatures = set()
+    take_types: set[str] = set()
+    forbidden_actions: set[str] = set()
+    for rule in restrictions:
         try:
-            action = _bind_required_action(winner, state, skillset)
-            pattern = _literal(action + ACTION_CLOSE)
-            fsm = regex_fsm(pattern)
-            if (fsm & generic_fsm).empty():
-                raise ValueError("required action is outside the generic action grammar")
-            return PolicyCompilation(
-                fsm=fsm, pattern=pattern, activated=(winner.name,), shadowed=shadowed,
-                evaluable=True, fallback_reason=None, required_action=action,
-            )
-        except ValueError as exc:
-            return PolicyCompilation(
-                fsm=generic_fsm, pattern=generic_pattern,
-                activated=tuple(rule.name for rule in matching), shadowed=shadowed,
-                evaluable=False, fallback_reason=f"unbound_required_action: {exc}",
-            )
-
-    active_names = tuple(rule.name for rule in matching)
-    take_type = None
-    forbidden = None
-    try:
-        for rule in matching:
             if "restrict_take_type" in rule.effect:
                 field_name = rule.effect["restrict_take_type"]["field"]
                 value = state.get(field_name)
                 if not isinstance(value, str) or re.fullmatch(ATOM_PATTERN, value) is None:
                     raise ValueError(f"policy {rule.name} cannot bind {field_name!r}")
-                take_type = value
+                allowed = allowed & regex_fsm(action_span_pattern(skillset, take_type=value))
+                take_types.add(value)
+                signatures.add(("restrict_take_type", value))
             elif "forbid_exact_action" in rule.effect:
                 field_name = rule.effect["forbid_exact_action"]["field"]
                 value = state.get(field_name)
-                if not isinstance(value, str):
+                if not isinstance(value, str) or not action_grammar_valid(value, skillset):
                     raise ValueError(f"policy {rule.name} cannot bind {field_name!r}")
-                forbidden = value
-        pattern = action_span_pattern(skillset, take_type=take_type)
-        fsm = regex_fsm(pattern)
-        if forbidden is not None:
-            fsm = fsm - regex_fsm(_literal(forbidden + ACTION_CLOSE))
-        if fsm.empty():
-            raise ValueError("policy intersection is empty")
-        return PolicyCompilation(
-            fsm=fsm, pattern=pattern, activated=active_names, shadowed=(),
-            evaluable=True, fallback_reason=None, forbidden_action=forbidden,
-            take_type=take_type,
-        )
-    except ValueError as exc:
-        return PolicyCompilation(
-            fsm=generic_fsm, pattern=generic_pattern, activated=active_names,
-            shadowed=(), evaluable=False,
-            fallback_reason=f"unsatisfiable_policy_language: {exc}",
-        )
+                allowed = allowed - regex_fsm(_literal(value + ACTION_CLOSE))
+                forbidden_actions.add(value)
+                signatures.add(("forbid_exact_action", value))
+            elif "forbid_action" in rule.effect:
+                action_template, bindings = _resolve_action_bindings(rule, state, skillset)
+                pattern = _action_template_pattern(action_template, bindings=bindings)
+                allowed = allowed - regex_fsm(pattern + _literal(ACTION_CLOSE))
+                signatures.add(("forbid_action", action_template.name, tuple(sorted(bindings.items()))))
+            elif "restrict_action_bindings" in rule.effect:
+                action_template, bindings = _resolve_action_bindings(
+                    rule, state, skillset, allow_unknown=True, allow_none=True,
+                )
+                family = regex_fsm(_action_template_pattern(action_template) + _literal(ACTION_CLOSE))
+                if "none" in bindings.values():
+                    allowed = allowed - family
+                else:
+                    bound = regex_fsm(
+                        _action_template_pattern(action_template, bindings=bindings)
+                        + _literal(ACTION_CLOSE)
+                    )
+                    allowed = allowed - (family - bound)
+                signatures.add(("restrict_action_bindings", action_template.name, tuple(sorted(bindings.items()))))
+            else:
+                raise ValueError(f"policy {rule.name} has an unsupported restriction")
+        except ValueError as exc:
+            raise PolicyCompilationError(f"invalid_restriction: {rule.name}: {exc}") from exc
+    if allowed.empty():
+        raise PolicyCompilationError("empty_restricted_language: no action satisfies the restrictions")
+
+    rejected: dict[str, str] = {}
+    winner = None
+    required_action = None
+    pattern = generic_pattern
+    for rule in required:
+        try:
+            action = _bind_required_action(rule, state, skillset)
+        except ValueError as exc:
+            rejected[rule.name] = f"unbound_required_action: {exc}"
+            continue
+        if not allowed.accepts(action + ACTION_CLOSE):
+            rejected[rule.name] = "forbidden_by_restrictions"
+            continue
+        winner = rule
+        required_action = action
+        pattern = _literal(action + ACTION_CLOSE)
+        allowed = regex_fsm(pattern)
+        break
+
+    return PolicyCompilation(
+        fsm=allowed, pattern=pattern,
+        activated=tuple(rule.name for rule in matching if rule in restrictions or rule is winner),
+        shadowed=tuple(rule.name for rule in required if rule is not winner and rule.name not in rejected),
+        evaluable=True, fallback_reason=None, required_action=required_action,
+        forbidden_action=next(iter(forbidden_actions)) if len(forbidden_actions) == 1 else None,
+        take_type=next(iter(take_types)) if len(take_types) == 1 else None,
+        restriction_signature=tuple(sorted(signatures)),
+        rejected_required_policies=rejected,
+    )
 
 
 def action_grammar_valid(action: str, skillset: SkillSet) -> bool:

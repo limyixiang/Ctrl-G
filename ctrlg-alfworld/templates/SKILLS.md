@@ -32,6 +32,8 @@ and using appliances.
 6. **Track progress**: Maintain an internal count of how many objects still need to be found and placed. Only stop searching when the count reaches zero.
 7. **Avoid immediate repetition**: Never immediately repeat the previous action. If stuck, move to a different unexplored location.
 8. **Only choose admissible actions**: Always pick an action from the actions templates. Do not invent actions.
+9. **Put down non-target object**: If holding a non-target object, put it down at the current receptacle.
+10. **Only take requested objects**: Only take objects matching the exacted requested type. Do not substitute similar types.
 
 ---
 
@@ -199,8 +201,7 @@ The state must contain a single flow-style YAML mapping that summarizes the task
 
 Example:
 
-<state>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, previous_action: move creditcard 2 to dresser 1, arrived_receptacle_state: open, held_relation: none, search: {locations_searched: [countertop 1, dresser 1], locations_to_search: [drawer 1, drawer 2]}, phase: acquire_second}</state>
-<action>go to countertop 1</action>
+<state>{task: puttwo, target_type: creditcard, required_count: 2, targets: [{id: creditcard 2, location: dresser 1, status: placed}, {id: creditcard 3, location: countertop 1, status: available}], held: none, at: dresser 1, dest: dresser 1, previous_action: move creditcard 2 to dresser 1, arrived_receptacle_state: open, held_relation: none, search: {locations_searched: [countertop 1, dresser 1], locations_to_search: [drawer 1, drawer 2]}, phase: acquire_second}</state><action>go to countertop 1</action>
 
 ### Value Rules
 

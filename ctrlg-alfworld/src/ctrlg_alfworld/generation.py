@@ -124,6 +124,7 @@ class TurnGeneration:
     action_grammar_valid: bool = False
     activated_policies: tuple[str, ...] = ()
     shadowed_policies: tuple[str, ...] = ()
+    rejected_required_policies: dict[str, str] = field(default_factory=dict)
     policy_evaluable: bool = False
     policy_satisfied: bool | None = None
     policy_fallback_reason: str | None = None

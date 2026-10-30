@@ -11,6 +11,7 @@ from .hmm_context import build_hmm_context
 from .experiment import ExperimentCondition, get_condition
 from .skills import SkillSet
 from .constraints import (
+    PolicyCompilationError,
     action_grammar_valid,
     compile_policy_language,
     parse_state,
@@ -91,6 +92,7 @@ class StepRecord:
     hmm_context_truncated: bool = False
     hmm_context_text: str = ""
     generated_eos_tokens: int = 0
+    rejected_required_policies: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -174,6 +176,7 @@ def run_episode(
         state_fields = turn.state_fields
         activated_policies = turn.activated_policies
         shadowed_policies = turn.shadowed_policies
+        rejected_required_policies = turn.rejected_required_policies
         policy_evaluable = turn.policy_evaluable
         policy_adherence = turn.policy_satisfied
         policy_fallback_reason = turn.policy_fallback_reason
@@ -188,9 +191,14 @@ def run_episode(
                 policy = compile_policy_language(state_fields, skillset)
                 activated_policies = policy.activated
                 shadowed_policies = policy.shadowed
+                rejected_required_policies = policy.rejected_required_policies
                 policy_evaluable = policy.evaluable
                 policy_adherence = policy_satisfied(action, policy)
                 policy_fallback_reason = policy.fallback_reason
+            except PolicyCompilationError as exc:
+                policy_evaluable = False
+                policy_adherence = None
+                policy_fallback_reason = str(exc)
             except ValueError as exc:
                 state_fields = {}
                 state_schema_valid = False
@@ -245,6 +253,7 @@ def run_episode(
             action_grammar_valid=grammar_valid,
             activated_policies=list(activated_policies),
             shadowed_policies=list(shadowed_policies),
+            rejected_required_policies=dict(rejected_required_policies),
             policy_evaluable=policy_evaluable,
             policy_satisfied=policy_adherence,
             policy_fallback_reason=policy_fallback_reason,

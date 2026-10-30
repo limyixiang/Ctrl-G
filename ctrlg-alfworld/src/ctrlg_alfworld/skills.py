@@ -21,8 +21,13 @@ SUPPORTED_SCHEMA_TYPES = {
     "literal", "enum", "lowercase_atom", "numbered_entity", "action",
     "record", "bounded_list",
 }
-SUPPORTED_CONDITION_OPERATORS = {"equals", "is_type", "not_in"}
-SUPPORTED_EFFECTS = {"require_action", "restrict_take_type", "forbid_exact_action"}
+SUPPORTED_CONDITION_OPERATORS = {
+    "equals", "is_type", "not_in", "equals_field", "not_equals_field",
+}
+SUPPORTED_EFFECTS = {
+    "require_action", "restrict_take_type", "forbid_exact_action",
+    "forbid_action", "restrict_action_bindings",
+}
 
 
 def _load_mapping(block: str, kind: str) -> dict[str, Any]:
@@ -174,7 +179,12 @@ def _validate_task_schema_contract(task: str, fields: list[dict[str, Any]]) -> N
             raise ValueError("puttwo targets must be exactly two independent records")
 
 
-def _validate_condition(condition: Any, path: str) -> None:
+def _validate_field_reference(value: Any, fields: set[str], path: str) -> None:
+    if not isinstance(value, str) or value not in fields:
+        raise ValueError(f"{path} references unknown state field {value!r}")
+
+
+def _validate_condition(condition: Any, fields: set[str], path: str) -> None:
     if not isinstance(condition, dict) or not isinstance(condition.get("field"), str):
         raise ValueError(f"{path} must be a mapping with a field")
     operators = set(condition) - {"field"}
@@ -183,13 +193,18 @@ def _validate_condition(condition: Any, path: str) -> None:
     operator = next(iter(operators))
     if operator not in SUPPORTED_CONDITION_OPERATORS:
         raise ValueError(f"{path} has unsupported operator {operator!r}")
+    _validate_field_reference(condition["field"], fields, f"{path}.field")
+    if operator in {"equals_field", "not_equals_field"}:
+        _validate_field_reference(condition[operator], fields, f"{path}.{operator}")
     if operator == "not_in" and not isinstance(condition[operator], list):
         raise ValueError(f"{path}.not_in must be a list")
     if operator == "is_type" and condition[operator] != "numbered_entity":
         raise ValueError(f"{path} supports only is_type: numbered_entity")
 
 
-def _validate_effect(effect: Any, action_names: set[str], path: str) -> None:
+def _validate_effect(
+    effect: Any, actions: dict[str, Action], fields: set[str], path: str,
+) -> None:
     if not isinstance(effect, dict) or len(effect) != 1:
         raise ValueError(f"{path} must contain exactly one effect")
     effect_name, effect_spec = next(iter(effect.items()))
@@ -197,18 +212,28 @@ def _validate_effect(effect: Any, action_names: set[str], path: str) -> None:
         raise ValueError(f"{path} has unsupported effect {effect_name!r}")
     if not isinstance(effect_spec, dict):
         raise ValueError(f"{path}.{effect_name} must be a mapping")
-    if effect_name == "require_action":
+    if effect_name in {"require_action", "forbid_action", "restrict_action_bindings"}:
         if set(effect_spec) != {"action", "bindings"}:
-            raise ValueError(f"{path}.require_action requires action and bindings")
-        if effect_spec["action"] not in action_names:
+            raise ValueError(f"{path}.{effect_name} requires action and bindings")
+        action_name = effect_spec["action"]
+        if not isinstance(action_name, str) or action_name not in actions:
             raise ValueError(
-                f"{path}.require_action references unknown action template "
-                f"{effect_spec['action']!r}"
+                f"{path}.{effect_name} references unknown action template {action_name!r}"
             )
         if not isinstance(effect_spec["bindings"], dict):
-            raise ValueError(f"{path}.require_action.bindings must be a mapping")
+            raise ValueError(f"{path}.{effect_name}.bindings must be a mapping")
+        placeholders = set(actions[action_name].placeholders)
+        bindings = effect_spec["bindings"]
+        for placeholder, field_name in bindings.items():
+            if placeholder not in placeholders:
+                raise ValueError(f"{path}.{effect_name} binds unknown placeholder {placeholder!r}")
+            _validate_field_reference(field_name, fields, f"{path}.{effect_name}.bindings")
+        if effect_name == "require_action" and set(bindings) != placeholders:
+            raise ValueError(f"{path}.require_action must bind every action placeholder")
     elif set(effect_spec) != {"field"} or not isinstance(effect_spec["field"], str):
         raise ValueError(f"{path}.{effect_name} requires one field")
+    else:
+        _validate_field_reference(effect_spec["field"], fields, f"{path}.{effect_name}.field")
 
 
 @dataclass(frozen=True)
@@ -279,6 +304,11 @@ class SkillSet:
 
         policies: list[PolicyRule] = []
         policy_names: set[str] = set()
+        # A reference can be absent from one task, e.g. state in put/puttwo.
+        state_fields = {
+            field["name"] for schema in schemas.values() for field in schema.fields
+        }
+        actions_by_name = {action.name: action for action in actions}
         for index, block in enumerate(POLICY_BLOCK_RE.findall(raw)):
             spec = _load_mapping(block, f"policy[{index}]")
             if set(spec) != {"version", "name", "priority", "when", "effect"}:
@@ -290,11 +320,13 @@ class SkillSet:
             name = spec["name"]
             if not isinstance(name, str) or name in policy_names:
                 raise ValueError(f"duplicate or invalid policy name {name!r}")
-            if not isinstance(spec["priority"], int) or not isinstance(spec["when"], list):
-                raise ValueError(f"policy {name!r} needs integer priority and list when")
+            if type(spec["priority"]) is not int or not 0 <= spec["priority"] <= 100:
+                raise ValueError(f"policy {name!r} needs integer priority between 0 and 100")
+            if not isinstance(spec["when"], list):
+                raise ValueError(f"policy {name!r} needs list when")
             for condition_index, condition in enumerate(spec["when"]):
-                _validate_condition(condition, f"policy[{name}].when[{condition_index}]")
-            _validate_effect(spec["effect"], action_names, f"policy[{name}].effect")
+                _validate_condition(condition, state_fields, f"policy[{name}].when[{condition_index}]")
+            _validate_effect(spec["effect"], actions_by_name, state_fields, f"policy[{name}].effect")
             policy_names.add(name)
             policies.append(PolicyRule(
                 name=name, version=POLICY_VERSION, priority=spec["priority"],

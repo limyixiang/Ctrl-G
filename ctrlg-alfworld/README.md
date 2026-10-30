@@ -79,19 +79,41 @@ These values are model claims. They are not checked against the real
 trajectory. Search-ledger syntax is guaranteed in `state_ctrlg`; factual
 correctness, overlap, and revisit tracking are not.
 
-The initial policy set is:
+The current policy set contains eight rules:
 
-1. Priority 100: declared closed arrival at an entity requires `open {at}`.
-2. Priority 90: declared non-target held object requires `move {held} to {at}`.
-3. Priority 20: every generated `take` uses the lexical type in `target_type`.
-   Thus `cup` and `mug` remain distinct, although object presence is not known.
-4. Priority 10: the action cannot exactly equal declared `previous_action`,
-   except `none` and `unknown`.
+1. Priority 100: forbid the declared previous action, except `none` and `unknown`.
+2. Priority 90: restrict pickups to `target_type`, forbid all pickups when an
+   object is declared held, and forbid navigation to the declared current location.
+3. Priority 80: a declared held target with known `at != dest` requires `go to {dest}`.
+4. Priority 70: declared closed arrival at an entity requires `open {at}`.
+5. Priority 60: a declared non-target held object requires `move {held} to {at}`.
+6. Priority 50: a declared held target with known `at == dest` requires placement.
 
-The highest-priority matching required-action rule shadows lower-priority
-rules. Otherwise restrictions intersect. An unbound or empty language falls
-back to the generic action grammar and records `policy_fallback_reason`; it
-never falls back to environment admissible commands.
+The compiler follows the supplied blocks exactly. Delivery currently has no
+task, transformation-state, or destination-access guard beyond the other rules;
+it is independent of the declared phase.
+
+Every matching restriction intersects before required actions are considered,
+regardless of priority. Required actions are tried in descending priority order
+(ties use policy name); forbidden or unbound requirements are rejected. The
+highest-priority permitted requirement selects a singleton language. If none
+qualifies, generation uses the remaining restricted grammar. Invalid restrictions
+or an empty restricted language raise `PolicyCompilationError`, without an
+unrestricted fallback or environment admissible commands.
+
+`equals_field` and `not_equals_field` compare declared fields and do not match
+missing/unknown operands. Existing `not_in` conditions retain their behavior for
+missing fields. Field references are validated against the union of task schemas.
+Policy priorities must be integers in 0..100.
+
+`forbid_action` accepts partial bindings; omitted placeholders are wildcards,
+but explicitly unbound arguments are errors. The compiler also supports optional
+`restrict_action_bindings`: numbered entities fix arguments, `none` excludes the
+action family, and unknown/missing values leave only that argument unconstrained.
+This effect is not present in the current skill file. Rejected required policies
+and their reasons are recorded separately from active restrictions and shadowed
+lower-priority requirements. DFA caching includes all resolved restrictions and
+the selected required action.
 
 ## Generation
 
