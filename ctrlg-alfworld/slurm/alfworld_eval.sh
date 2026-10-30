@@ -35,6 +35,11 @@ EPISODES=${2:-134}
 MAX_STEPS=${3:-50}
 BEAM_SIZE=${BEAM_SIZE:-1}
 MODEL=${MODEL:-Qwen/Qwen3.5-9B}
+SKILLS=${SKILLS:-ctrlg-alfworld/templates/SKILLS.md}
+SKILLS_ARGS=()
+if [[ "${ALLOW_SKILLS_MISMATCH:-0}" == "1" ]]; then
+  SKILLS_ARGS=(--allow-skills-mismatch)
+fi
 OUTPUT=${OUTPUT:-results/alfworld/single_${CONDITION}_${SLURM_JOB_ID}}
 HMM_ARGS=()
 if [[ "$CONDITION" == "state_ctrlg" ]]; then
@@ -45,6 +50,8 @@ fi
 python ctrlg-alfworld/scripts/run_eval.py \
   --model "$MODEL" \
   --condition "$CONDITION" \
+  --skills "$SKILLS" \
+  "${SKILLS_ARGS[@]}" \
   "${HMM_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --max_steps "$MAX_STEPS" \

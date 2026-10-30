@@ -44,9 +44,11 @@ def resolve_hmm_path(
 
 
 def validate_hmm_provenance(
-    hmm_path: str | None, *, skillset: SkillSet, model: str, hmm_context_steps=1, max_hmm_context_tokens=1024
+    hmm_path: str | None, *, skillset: SkillSet, model: str,
+    hmm_context_steps=1, max_hmm_context_tokens=1024,
+    allow_skills_mismatch: bool = False,
 ) -> tuple[str | None, dict | None]:
-    """Require unmasked, observable-context joint-HMM provenance."""
+    """Validate joint-HMM provenance, optionally allowing a different skill hash."""
 
     if hmm_path is None:
         return None, None
@@ -61,6 +63,9 @@ def validate_hmm_provenance(
 
     with open(metadata_path) as metadata_file:
         metadata = json.load(metadata_file)
+    training_skills_hash = metadata.get("skills_sha256")
+    if not isinstance(training_skills_hash, str) or not training_skills_hash:
+        raise ValueError("HMM provenance requires a recorded skills_sha256")
     expected = {
         "skills_sha256": skillset.content_sha256,
         "schema_version": skillset.schema_version,
@@ -78,7 +83,9 @@ def validate_hmm_provenance(
     }
     mismatches = [
         f"{key}: checkpoint={metadata.get(key)!r}, evaluation={value!r}"
-        for key, value in expected.items() if metadata.get(key) != value
+        for key, value in expected.items()
+        if metadata.get(key) != value
+        and not (key == "skills_sha256" and allow_skills_mismatch)
     ]
     if mismatches:
         raise ValueError("HMM provenance mismatch: " + "; ".join(mismatches))
@@ -92,6 +99,10 @@ def main():
     parser.add_argument("--condition", required=True, choices=condition_choices())
     parser.add_argument("--config", default=str(ROOT / "configs/config_tw.yaml"))
     parser.add_argument("--skills", default=str(ROOT / "templates/SKILLS.md"))
+    parser.add_argument(
+        "--allow-skills-mismatch", action="store_true",
+        help="Allow an HMM trained with a different skills_sha256; retain all other provenance checks",
+    )
     parser.add_argument(
         "--split",
         default="eval_out_of_distribution",
@@ -135,7 +146,8 @@ def main():
         hmm_training_metadata, hmm_provenance = (
             validate_hmm_provenance(
                 hmm_path, skillset=skillset, model=args.model,
-                hmm_context_steps=args.hmm_context_steps, max_hmm_context_tokens=args.max_hmm_context_tokens
+                hmm_context_steps=args.hmm_context_steps, max_hmm_context_tokens=args.max_hmm_context_tokens,
+                allow_skills_mismatch=args.allow_skills_mismatch,
             )
         )
     except ValueError as exc:
@@ -322,6 +334,7 @@ def main():
             file_sha256(hmm_training_metadata) if hmm_training_metadata else None
         ),
         "hmm_provenance": hmm_provenance,
+        "allow_skills_mismatch": args.allow_skills_mismatch,
         "split": args.split,
         "seed": args.seed,
         "max_steps": args.max_steps,

@@ -302,6 +302,37 @@ application/skip reason separately for state and action, context token count/sho
 model, prompt settings, skills, episode manifest, policy version, or HMM
 provenance.
 
+To test policy changes with a frozen HMM, pass `--allow-skills-mismatch` to
+`run_eval.py` for `state_ctrlg` and to `summarize_results.py`. This permits only
+the HMM training skill hash to differ from the evaluation skill hash. Both
+evaluation conditions must still use byte-identical updated skills, and all
+other provenance checks remain active. Evaluation summaries retain the original
+`hmm_provenance`, the current `skills_sha256`, and the override setting; the
+combined report adds `skills_validation` with the evaluation hash, training
+hash per HMM arm, and whether each matches. Checkpoint metadata is never rewritten.
+
+```bash
+python ctrlg-alfworld/scripts/run_eval.py \
+  --model Qwen/Qwen3.5-9B --condition state_prompt \
+  --skills ctrlg-alfworld/templates/SKILLS.md --out results/alfworld/policy_trial
+
+python ctrlg-alfworld/scripts/run_eval.py \
+  --model Qwen/Qwen3.5-9B --condition state_ctrlg \
+  --hmm results/alfworld/hmm_context_model_9b_v1/checkpoint-112 \
+  --skills ctrlg-alfworld/templates/SKILLS.md --allow-skills-mismatch \
+  --out results/alfworld/policy_trial
+
+python ctrlg-alfworld/scripts/summarize_results.py \
+  --results results/alfworld/policy_trial --allow-skills-mismatch
+```
+
+The Slurm evaluation launchers accept `ALLOW_SKILLS_MISMATCH=1` to forward the
+override and `SKILLS=/path/to/SKILLS.md` to select a skill file. Use this for
+policy edits over the existing state schemas and action templates. The override
+does not verify structural equivalence of edited schemas or action templates;
+schema/policy version checks remain active. Schema, action-format, or serialization
+changes should use an appropriately rebuilt dataset and HMM.
+
 ## Format and migration
 
 The LLM prompt identifier remains `state_with_persistent_history_no_oracle_v1`:

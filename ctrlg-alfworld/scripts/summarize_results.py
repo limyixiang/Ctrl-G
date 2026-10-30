@@ -9,6 +9,8 @@ episode statistics and paired comparisons are null. Gamefile lists are used for
 validation but never copied into the report.
 Use --allow-source-mismatch to permit differing recorded source hashes;
 all other validation remains enabled and the hashes are included in the output.
+Use --allow-skills-mismatch to permit HMM training skills to differ from the
+shared evaluation skills; both hashes are reported and other checks remain active.
 """
 
 import argparse
@@ -323,6 +325,7 @@ def compare_episodes(treatment: list[dict] | None, baseline: list[dict] | None) 
 def validate_comparable(
     summaries: dict[str, dict], *, hmm_context_steps: int | None = None,
     allow_source_mismatch: bool = False,
+    allow_skills_mismatch: bool = False,
 ) -> None:
     """Validate a pair, allowing the grid's specified HMM context length."""
 
@@ -338,6 +341,9 @@ def validate_comparable(
         if missing:
             problems.append(f"{condition}: missing required fields {', '.join(missing)}")
             continue
+        evaluation_skills_hash = candidate["skills_sha256"]
+        if not isinstance(evaluation_skills_hash, str) or not evaluation_skills_hash:
+            problems.append(f"{condition}: requires a recorded skills_sha256")
         if candidate.get("condition") != condition:
             problems.append(f"{condition}: expected condition {condition!r}")
         expected = get_condition(condition)
@@ -378,7 +384,12 @@ def validate_comparable(
     if candidate.get("hmm") is None or candidate.get("hmm_sha256") is None:
         problems.append("state_ctrlg: matched HMM checkpoint and hash are required")
     provenance = candidate.get("hmm_provenance") or {}
+    training_skills_hash = provenance.get("skills_sha256")
+    if not isinstance(training_skills_hash, str) or not training_skills_hash:
+        problems.append("state_ctrlg: HMM provenance requires a recorded skills_sha256")
     for field in ("model", "tokenizer", "prompt_format", "skills_sha256", "schema_version", "policy_version"):
+        if field == "skills_sha256" and allow_skills_mismatch:
+            continue
         if provenance.get(field) != candidate.get(field):
             problems.append(f"state_ctrlg: HMM provenance {field} mismatch")
     if provenance.get("no_oracle_filtering") is not True:
@@ -402,7 +413,8 @@ def validate_comparable(
 
 
 def validate_grid(
-    summaries: dict[str, dict], *, allow_source_mismatch: bool = False
+    summaries: dict[str, dict], *, allow_source_mismatch: bool = False,
+    allow_skills_mismatch: bool = False,
 ) -> None:
     missing = [arm for arm in GRID_ARMS if arm not in summaries]
     if missing:
@@ -415,6 +427,7 @@ def validate_grid(
                 {"state_prompt": summaries["prompt_only"], condition: summaries[arm]},
                 hmm_context_steps=context_steps,
                 allow_source_mismatch=allow_source_mismatch,
+                allow_skills_mismatch=allow_skills_mismatch,
             )
         except ValueError as exc:
             raise ValueError(f"{arm}: {exc}") from exc
@@ -430,6 +443,10 @@ def main():
     parser.add_argument(
         "--allow-source-mismatch", action="store_true",
         help="Allow differing source_tree_sha256 values; retain all other checks and report the hashes",
+    )
+    parser.add_argument(
+        "--allow-skills-mismatch", action="store_true",
+        help="Allow HMM training skills_sha256 to differ from evaluation; evaluation arms must still match",
     )
     args = parser.parse_args()
     root = Path(args.results)
@@ -450,9 +467,15 @@ def main():
         with path.open(encoding="utf-8") as input_file:
             summaries[arm] = json.load(input_file)
     if is_grid:
-        validate_grid(summaries, allow_source_mismatch=args.allow_source_mismatch)
+        validate_grid(
+            summaries, allow_source_mismatch=args.allow_source_mismatch,
+            allow_skills_mismatch=args.allow_skills_mismatch,
+        )
     else:
-        validate_comparable(summaries, allow_source_mismatch=args.allow_source_mismatch)
+        validate_comparable(
+            summaries, allow_source_mismatch=args.allow_source_mismatch,
+            allow_skills_mismatch=args.allow_skills_mismatch,
+        )
     baseline = "prompt_only" if is_grid else "state_prompt"
     treatments = ("k8", "k4") if is_grid else ("state_ctrlg",)
 
@@ -521,6 +544,21 @@ def main():
             "allow_source_mismatch": True,
             "matched": len(set(source_hashes.values())) == 1,
             "sha256_by_arm": source_hashes,
+        }
+    if args.allow_skills_mismatch:
+        evaluation_hash = summaries[baseline]["skills_sha256"]
+        training_hashes = {
+            arm: summaries[arm]["hmm_provenance"]["skills_sha256"]
+            for arm in treatments
+        }
+        output["skills_validation"] = {
+            "allow_skills_mismatch": True,
+            "evaluation_sha256": evaluation_hash,
+            "hmm_training_sha256_by_arm": training_hashes,
+            "matched_by_arm": {
+                arm: training_hash == evaluation_hash
+                for arm, training_hash in training_hashes.items()
+            },
         }
     rendered = json.dumps(output, indent=2, allow_nan=False)
     if args.out:

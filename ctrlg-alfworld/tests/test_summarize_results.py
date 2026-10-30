@@ -323,6 +323,102 @@ class SummaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing required fields source_tree_sha256"):
             module.validate_grid(values, allow_source_mismatch=True)
 
+    def test_skills_mismatch_requires_override_and_reports_both_hashes(self):
+        for grid in (True, False):
+            with self.subTest(grid=grid), tempfile.TemporaryDirectory() as directory:
+                values = grid_summaries() if grid else summaries()
+                treatments = ("k8", "k4") if grid else ("state_ctrlg",)
+                for arm in treatments:
+                    values[arm]["hmm_provenance"]["skills_sha256"] = f"training-{arm}"
+                original = deepcopy(values)
+                root = Path(directory)
+                self.write_summaries(root, values, grid=grid)
+                with self.assertRaisesRegex(ValueError, "HMM provenance skills_sha256"):
+                    self.run_main(root)
+                # Source-code override does not also permit different training skills.
+                with self.assertRaisesRegex(ValueError, "HMM provenance skills_sha256"):
+                    self.run_main(root, "--allow-source-mismatch")
+                output = self.run_main(root, "--allow-skills-mismatch")
+                self.assertEqual(output["skills_validation"], {
+                    "allow_skills_mismatch": True,
+                    "evaluation_sha256": "s",
+                    "hmm_training_sha256_by_arm": {arm: f"training-{arm}" for arm in treatments},
+                    "matched_by_arm": {arm: False for arm in treatments},
+                })
+                self.assertEqual(values, original)
+                for arm, summary in values.items():
+                    summary_dir = root / arm if grid else root
+                    path = summary_dir / f"summary_{summary['condition']}.json"
+                    self.assertEqual(json.loads(path.read_text()), summary)
+
+    def test_skills_override_reports_matching_and_differing_hmm_arms(self):
+        values = grid_summaries()
+        values["k4"]["hmm_provenance"]["skills_sha256"] = "old-skills"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_summaries(root, values)
+            output = self.run_main(root, "--allow-skills-mismatch")
+        self.assertEqual(output["skills_validation"]["matched_by_arm"], {"k8": True, "k4": False})
+
+    def test_skills_override_preserves_other_checks(self):
+        for grid in (True, False):
+            for provenance_field, wrong_value in (
+                ("model", "other-model"), ("tokenizer", "other-tokenizer"),
+                ("prompt_format", "other-prompt"), ("schema_version", 2), ("policy_version", 2),
+                ("hmm_sequence_format", "old-format"), ("hmm_context_format", "old-context"),
+                ("hmm_context_steps", 2), ("max_hmm_context_tokens", 512),
+                ("no_oracle_filtering", False), ("constrained_state_collection", True),
+                ("selection_policy", "executed_only"),
+                ("skills_sha256", None), ("skills_sha256", ""), ("skills_sha256", 42),
+            ):
+                with self.subTest(grid=grid, field=provenance_field, value=wrong_value):
+                    values = grid_summaries() if grid else summaries()
+                    arm = "k4" if grid else "state_ctrlg"
+                    values[arm]["hmm_provenance"].update({
+                        "skills_sha256": "old-skills", provenance_field: wrong_value,
+                    })
+                    validate = module.validate_grid if grid else module.validate_comparable
+                    with self.assertRaises(ValueError):
+                        validate(values, allow_skills_mismatch=True)
+
+    def test_skills_override_requires_recorded_training_hash(self):
+        values = grid_summaries()
+        del values["k8"]["hmm_provenance"]["skills_sha256"]
+        with self.assertRaisesRegex(ValueError, "skills_sha256"):
+            module.validate_grid(values, allow_skills_mismatch=True)
+
+    def test_skills_override_requires_recorded_evaluation_hash(self):
+        for missing_hash in (None, "", 42):
+            with self.subTest(missing_hash=missing_hash):
+                values = grid_summaries()
+                for summary in values.values():
+                    summary["skills_sha256"] = missing_hash
+                with self.assertRaisesRegex(ValueError, "requires a recorded skills_sha256"):
+                    module.validate_grid(values, allow_skills_mismatch=True)
+
+    def test_skills_override_requires_same_evaluation_skills_and_source(self):
+        for grid in (True, False):
+            for field in ("skills_sha256", "source_tree_sha256", "episode_manifest_sha256", "seed"):
+                with self.subTest(grid=grid, field=field):
+                    values = grid_summaries() if grid else summaries()
+                    arm = "k8" if grid else "state_ctrlg"
+                    values[arm]["hmm_provenance"]["skills_sha256"] = "old-skills"
+                    values[arm][field] = "different"
+                    validate = module.validate_grid if grid else module.validate_comparable
+                    with self.assertRaisesRegex(ValueError, field):
+                        validate(values, allow_skills_mismatch=True)
+
+    def test_skills_and_source_overrides_can_be_combined(self):
+        values = grid_summaries()
+        values["k4"]["hmm_provenance"]["skills_sha256"] = "old-skills"
+        values["k4"]["source_tree_sha256"] = "different-source"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_summaries(root, values)
+            output = self.run_main(root, "--allow-skills-mismatch", "--allow-source-mismatch")
+        self.assertFalse(output["skills_validation"]["matched_by_arm"]["k4"])
+        self.assertFalse(output["source_tree_validation"]["matched"])
+
 
     def test_episode_efficiency_costs_and_task_breakdowns(self):
         episodes = {

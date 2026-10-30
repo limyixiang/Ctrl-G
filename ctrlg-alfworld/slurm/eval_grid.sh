@@ -30,6 +30,11 @@ OUTPUT=${OUTPUT:-results/alfworld/grid_${SLURM_ARRAY_JOB_ID}}
 EPISODES=${EPISODES:-134}
 BEAM_SIZE=${BEAM_SIZE:-1}
 SEED=${SEED:-42}
+SKILLS=${SKILLS:-ctrlg-alfworld/templates/SKILLS.md}
+SKILLS_ARGS=()
+if [[ "${ALLOW_SKILLS_MISMATCH:-0}" == "1" ]]; then
+  SKILLS_ARGS=(--allow-skills-mismatch)
+fi
 CONDITION=state_ctrlg
 HMM_ARGS=()
 # Each base model shares one prompt-only baseline across both HMM contexts.
@@ -57,6 +62,8 @@ esac
 python ctrlg-alfworld/scripts/run_eval.py \
   --model "$MODEL" \
   --condition "$CONDITION" \
+  --skills "$SKILLS" \
+  "${SKILLS_ARGS[@]}" \
   "${HMM_ARGS[@]}" \
   --num_episodes "$EPISODES" \
   --max_hmm_context_tokens "${MAX_HMM_CONTEXT_TOKENS:-1024}" \
