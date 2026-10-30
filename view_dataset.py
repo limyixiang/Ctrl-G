@@ -4,7 +4,7 @@ import re
 import torch
 from transformers import AutoTokenizer
 
-data_dir = Path("results/alfworld/hmm_context_data_9b_k4_b1024_v1")  # change this
+data_dir = Path("results/alfworld/hmm_context_data_4b_k4_b1024_v1")  # change this
 meta_path = next(data_dir.glob("*.metadata.json"))
 meta = json.loads(meta_path.read_text())
 
@@ -29,7 +29,7 @@ for path in files:
     tensor = torch.load(path, map_location="cpu", weights_only=True)
     print(f"\n{path.name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}")
 
-    for index, row in enumerate(tensor[:5]):
+    for index, row in enumerate(tensor[:2]):
         ids = row.tolist()
 
         # The first EOS is the real terminator; subsequent EOS tokens are padding.

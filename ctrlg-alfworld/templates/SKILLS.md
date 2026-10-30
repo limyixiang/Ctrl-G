@@ -26,11 +26,11 @@ and using appliances.
 
 1. **Decompose the task**: Parse the goal into ordered sub-goals (locate, acquire, transform, deliver). Complete each before moving to the next.
 2. **Systematic exploration**: Search each surface and container exactly once before revisiting. Open closed containers (drawers, cabinets, fridge) before judging them empty.
-3. **Grab immediately**: When a required object is visible and reachable, take it right away before moving elsewhere.
+3. **Grab immediately when empty-handed**: When your hand is empty and a required object is visible and reachable, take it before moving elsewhere. Do not take another object while holding something.
 4. **Transform before placing**: If the task requires cleaning, heating, or cooling, perform the state change at the appropriate appliance before heading to the final destination.
 5. **Direct delivery**: Once holding the transformed (or untransformed) goal object, navigate straight to the target receptacle and place it.
 6. **Track progress**: Maintain an internal count of how many objects still need to be found and placed. Only stop searching when the count reaches zero.
-7. **Avoid loops**: Never repeat the same action more than twice in a row. If stuck, move to a different unexplored location.
+7. **Avoid immediate repetition**: Never immediately repeat the previous action. If stuck, move to a different unexplored location.
 8. **Only choose admissible actions**: Always pick an action from the actions templates. Do not invent actions.
 
 ---
@@ -38,7 +38,7 @@ and using appliances.
 ## Common Mistakes to Avoid
 
 - **Revisiting searched locations**: Keep track of which surfaces/containers have been checked; DO NOT re-examine them.
-- **Ignoring visible objects**: If the target object appears in the observation, pick it up immediately.
+- **Ignoring visible objects**: If the target object appears in the observation and your hand is empty, pick it up immediately.
 - **Skipping state changes**: DO NOT place an object at the destination without first cleaning/heating/cooling it when required.
 - **Premature termination**: DO NOT stop the episode until all goal conditions are verified as met.
 - **Action loops**: DO NOT repeat the same actions. Move on to new locations instead.
@@ -399,7 +399,7 @@ fields:
 ```policy
 version: 1
 name: open_declared_closed_receptacle
-priority: 100
+priority: 70
 when:
   - {field: arrived_receptacle_state, equals: closed}
   - {field: at, is_type: numbered_entity}
@@ -410,7 +410,7 @@ effect:
 ```policy
 version: 1
 name: put_down_declared_non_target
-priority: 90
+priority: 60
 when:
   - {field: held_relation, equals: non_target}
   - {field: held, is_type: numbered_entity}
@@ -422,7 +422,7 @@ effect:
 ```policy
 version: 1
 name: preserve_target_lexical_type
-priority: 20
+priority: 90
 when: []
 effect:
   restrict_take_type: {field: target_type}
@@ -431,9 +431,57 @@ effect:
 ```policy
 version: 1
 name: do_not_repeat_declared_previous_action
-priority: 10
+priority: 100
 when:
   - {field: previous_action, not_in: [none, unknown]}
 effect:
   forbid_exact_action: {field: previous_action}
+```
+
+```policy
+version: 1
+name: no_take_with_occupied_hand
+priority: 90
+when:
+  - {field: held, is_type: numbered_entity}
+effect:
+  forbid_action: {action: take, bindings: {}}
+```
+
+```policy
+version: 1
+name: no_goto_current_location
+priority: 90
+when:
+  - {field: at, is_type: numbered_entity}
+effect:
+  forbid_action: {action: goto, bindings: {recep: at}}
+```
+
+```policy
+version: 1
+name: deliver_held_target_to_destination
+priority: 80
+when:
+  - {field: held_relation, equals: target}
+  - {field: held, is_type: numbered_entity}
+  - {field: at, is_type: numbered_entity}
+  - {field: dest, is_type: numbered_entity}
+  - {field: at, not_equals_field: dest}
+effect:
+  require_action: {action: goto, bindings: {recep: dest}}
+```
+
+```policy
+version: 1
+name: place_held_target_at_destination
+priority: 50
+when:
+  - {field: held_relation, equals: target}
+  - {field: held, is_type: numbered_entity}
+  - {field: at, is_type: numbered_entity}
+  - {field: dest, is_type: numbered_entity}
+  - {field: at, equals_field: dest}
+effect:
+  require_action: {action: move, bindings: {obj: held, recep: dest}}
 ```

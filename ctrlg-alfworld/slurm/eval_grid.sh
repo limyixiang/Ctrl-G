@@ -8,9 +8,10 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:h100-47:1
+#SBATCH --exclude="xgpi17,xgpi18,xgpi15"
 #SBATCH -o logs/%x_%A_%a.out
 #SBATCH -e logs/%x_%A_%a.err
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=e1121685@u.nus.edu
 
 set -euo pipefail
@@ -72,5 +73,5 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --out "$OUTPUT/$ARM"
 
 # Outputs are written under $OUTPUT/{k8,k4,prompt_only}/.
-# MODEL='Qwen/Qwen3.5-9B' HMM_K8='results/alfworld/hmm_context_model_9b_k8_v1/checkpoint-112' HMM_K4='results/alfworld/hmm_context_model_9b_k4_v1/checkpoint-112' OUTPUT='results/alfworld/grid_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
-# MODEL='Qwen/Qwen3.5-4B' HMM_K8='results/alfworld/hmm_context_model_4b_k8_v1/checkpoint-112' HMM_K4='results/alfworld/hmm_context_model_4b_k4_v1/checkpoint-112' OUTPUT='results/alfworld/grid_4b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-9B' HMM_K8='results/alfworld/hmm_context_model_9b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_9b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# MODEL='Qwen/Qwen3.5-4B' HMM_K8='results/alfworld/hmm_context_model_4b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_4b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_4b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
