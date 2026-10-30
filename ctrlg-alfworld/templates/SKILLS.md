@@ -28,7 +28,7 @@ and using appliances.
 2. **Systematic exploration**: Search each surface and container exactly once before revisiting. Open closed containers (drawers, cabinets, fridge) before judging them empty.
 3. **Grab immediately when empty-handed**: When your hand is empty and a required object is visible and reachable, take it before moving elsewhere. Do not take another object while holding something.
 4. **Transform before placing**: If the task requires cleaning, heating, or cooling, perform the state change at the appropriate appliance before heading to the final destination.
-5. **Direct delivery**: Once holding the transformed (or untransformed) goal object, navigate straight to the target receptacle and place it.
+5. **Direct delivery**: For pick-and-place and pick-two tasks, deliver a held target immediately. For clean, heat, and cool tasks, deliver only after the state confirms the required transformation. Then navigate straight to the target receptacle and place the object.
 6. **Track progress**: Maintain an internal count of how many objects still need to be found and placed. Only stop searching when the count reaches zero.
 7. **Avoid immediate repetition**: Never immediately repeat the previous action. If stuck, move to a different unexplored location.
 8. **Only choose admissible actions**: Always pick an action from the actions templates. Do not invent actions.
@@ -464,6 +464,7 @@ version: 1
 name: deliver_held_target_to_destination
 priority: 80
 when:
+  - {field: state, not_in: [unmodified, unknown]}
   - {field: held_relation, equals: target}
   - {field: held, is_type: numbered_entity}
   - {field: at, is_type: numbered_entity}
@@ -478,6 +479,7 @@ version: 1
 name: place_held_target_at_destination
 priority: 50
 when:
+  - {field: state, not_in: [unmodified, unknown]}
   - {field: held_relation, equals: target}
   - {field: held, is_type: numbered_entity}
   - {field: at, is_type: numbered_entity}

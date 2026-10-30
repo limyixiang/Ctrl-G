@@ -89,9 +89,12 @@ The current policy set contains eight rules:
 5. Priority 60: a declared non-target held object requires `move {held} to {at}`.
 6. Priority 50: a declared held target with known `at == dest` requires placement.
 
-The compiler follows the supplied blocks exactly. Delivery currently has no
-task, transformation-state, or destination-access guard beyond the other rules;
-it is independent of the declared phase.
+The compiler follows the supplied blocks exactly. Both delivery rules exclude
+`state: unmodified` and `state: unknown`, so transformation tasks can visit their
+tool before delivery. Completed transformations enable delivery. The `put` and
+`puttwo` schemas omit `state`, which passes this `not_in` guard and preserves
+immediate delivery. Delivery is independent of phase and has no additional
+destination-access guard beyond the other rules.
 
 Every matching restriction intersects before required actions are considered,
 regardless of priority. Required actions are tried in descending priority order

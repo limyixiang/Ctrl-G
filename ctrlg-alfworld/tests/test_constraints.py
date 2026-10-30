@@ -239,10 +239,42 @@ class ConstraintTests(unittest.TestCase):
                 self.assertEqual(policy.required_action, expected)
                 self.assertIn("no_take_with_occupied_hand", policy.activated)
 
-    def test_delivery_uses_current_skills_without_implicit_transformation_guard(self):
-        state = self.fields(held="cup 1", held_relation="target", phase="acquire")
-        state.update(task="heat", state="unmodified", tool="microwave 1")
-        self.assertEqual(compile_policy_language(state, self.skills).required_action, "go to shelf 1")
+    def test_pending_transformations_do_not_force_navigation_or_placement(self):
+        tasks = (("clean", "sinkbasin 1"), ("heat", "microwave 1"), ("cool", "fridge 1"))
+        for task, tool in tasks:
+            for status in ("unmodified", "unknown"):
+                for at in ("countertop 1", "shelf 1", tool):
+                    with self.subTest(task=task, status=status, at=at):
+                        state = self.fields(held="cup 1", held_relation="target", at=at)
+                        state.update(task=task, state=status, tool=tool, phase="go_tool")
+                        policy = compile_policy_language(state, self.skills)
+                        self.assertIsNone(policy.required_action)
+                        self.assertNotIn("deliver_held_target_to_destination", policy.activated)
+                        self.assertNotIn("place_held_target_at_destination", policy.activated)
+                        next_action = (f"{task} cup 1 with {tool}" if at == tool else f"go to {tool}")
+                        self.assertTrue(policy_satisfied(next_action, policy), next_action)
+                        self.assertFalse(policy_satisfied(f"take cup 2 from {at}", policy))
+
+    def test_completed_transformations_enable_delivery_independent_of_phase(self):
+        for task, status, tool in (("clean", "clean", "sinkbasin 1"),
+                                   ("heat", "hot", "microwave 1"),
+                                   ("cool", "cool", "fridge 1")):
+            for at, expected in (("countertop 1", "go to shelf 1"),
+                                 ("shelf 1", "move cup 1 to shelf 1")):
+                with self.subTest(task=task, at=at):
+                    state = self.fields(held="cup 1", held_relation="target", at=at)
+                    state.update(task=task, state=status, tool=tool, phase="transform")
+                    self.assertEqual(compile_policy_language(state, self.skills).required_action, expected)
+
+    def test_plain_put_and_puttwo_still_deliver_without_transformation_field(self):
+        for task in ("put", "puttwo"):
+            for at, expected in (("countertop 1", "go to shelf 1"),
+                                 ("shelf 1", "move cup 1 to shelf 1")):
+                with self.subTest(task=task, at=at):
+                    state = self.fields(held="cup 1", held_relation="target", at=at, phase="acquire")
+                    state["task"] = task
+                    self.assertNotIn("state", state)
+                    self.assertEqual(compile_policy_language(state, self.skills).required_action, expected)
 
     def test_puttwo_delivery_does_not_need_target_record_selection(self):
         state = self.fields(held="cup 1", held_relation="target")
