@@ -77,5 +77,5 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --out "$OUTPUT/$ARM"
 
 # Outputs are written under $OUTPUT/{k8,k4,prompt_only,mask_only}/.
-# MODEL='Qwen/Qwen3.5-9B' HMM_K8='results/alfworld/hmm_context_model_9b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_9b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
-# MODEL='Qwen/Qwen3.5-4B' HMM_K8='results/alfworld/hmm_context_model_4b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_4b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_4b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# ALLOW_SKILLS_MISMATCH=1 MODEL='Qwen/Qwen3.5-9B' HMM_K8='results/alfworld/hmm_context_model_9b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_9b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
+# ALLOW_SKILLS_MISMATCH=1 MODEL='Qwen/Qwen3.5-4B' HMM_K8='results/alfworld/hmm_context_model_4b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_4b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_4b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
