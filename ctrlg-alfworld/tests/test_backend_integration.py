@@ -127,6 +127,79 @@ class BackendIntegrationTests(unittest.TestCase):
         )
         self.assertNotIn("admissible", repr(seen))
 
+    def test_mask_only_uses_hard_processors_in_both_phases_with_matched_decoding(self):
+        import torch
+        from ctrlg_alfworld.constraints import HardDFALogitsProcessor
+
+        for sample in (False, True):
+            for checkpoint in (None, object()):
+                with self.subTest(sample=sample, checkpoint_loaded=checkpoint is not None):
+                    tokenizer = CharacterTokenizer()
+                    backend = object.__new__(HFBackend)
+                    backend.tokenizer, backend.vocab_size, backend.device = tokenizer, len(tokenizer), "cpu"
+                    backend.cfg = GenConfig(beam_size=3, do_sample=sample, temperature=.6,
+                                            rollout_temperature=.4, min_action_tokens=2)
+                    backend.hmm_model = checkpoint
+                    calls = []
+
+                    class Model:
+                        def generate(model_self, **kwargs):
+                            prompt = tokenizer.decode(kwargs["input_ids"][0].tolist())
+                            text = (STATE + "</state>" if prompt.endswith("<state>") else
+                                    "inventory</action>" if prompt.endswith("<action>") else "reason</think>")
+                            generated = tokenizer.encode(text)
+                            processors = kwargs.get("logits_processor", [])
+                            if processors:
+                                self.assertEqual(len(processors), 1)
+                                self.assertIsInstance(processors[0], HardDFALogitsProcessor)
+                                for index in (0, len(generated)-1):
+                                    current = torch.tensor([kwargs["input_ids"][0].tolist() + generated[:index]])
+                                    scores = torch.arange(len(tokenizer), dtype=torch.float)[None, :]
+                                    masked = processors[0](current, scores)
+                                    # Feasible LLM scores are unchanged; impossible tokens are removed.
+                                    self.assertEqual(masked[0, generated[index]], scores[0, generated[index]])
+                                    self.assertTrue(torch.isneginf(masked).any())
+                            calls.append(kwargs)
+                            return torch.tensor([kwargs["input_ids"][0].tolist() + generated])
+
+                    backend.model = Model()
+                    with (
+                        patch.object(backend, "_generate_state_hmm_span", side_effect=AssertionError("state HMM used")),
+                        patch.object(backend, "_generate_hmm_span", side_effect=AssertionError("action HMM used")),
+                    ):
+                        turn = backend.generate_turn("P", self.skills, "put", constrained=True, use_hmm=False,
+                                                     greedy_head=not sample,
+                                                     hmm_context=SimpleNamespace(token_ids=(1, 2), truncated=True))
+                    self.assertTrue(turn.state_schema_valid and turn.action_grammar_valid and turn.policy_satisfied)
+                    self.assertEqual(turn.parsed.action, "inventory")
+                    self.assertFalse(turn.state_hmm_applied or turn.hmm_applied)
+                    self.assertEqual(turn.state_hmm_skip_reason, "hmm_disabled")
+                    self.assertEqual(turn.hmm_skip_reason, "hmm_disabled")
+                    self.assertEqual(turn.hmm_prefix_token_ids, ())
+                    self.assertEqual(turn.hmm_context_token_ids, ())
+                    self.assertFalse(turn.hmm_context_truncated)
+                    self.assertEqual([kw["num_beams"] for kw in calls], [1, 1, 1 if sample else 3])
+                    self.assertEqual([kw["temperature"] for kw in calls], [.4, .4, .6] if sample else [None]*3)
+                    self.assertEqual(calls[1]["max_new_tokens"], backend.cfg.max_state_tokens)
+                    self.assertEqual(calls[2]["max_new_tokens"], backend.cfg.max_action_tokens)
+                    self.assertEqual(calls[2]["min_new_tokens"], backend.cfg.min_action_tokens)
+
+    def test_hard_mask_rejects_incomplete_or_unaccepted_output(self):
+        import torch
+
+        tokenizer = CharacterTokenizer()
+        backend = object.__new__(HFBackend)
+        backend.tokenizer, backend.device = tokenizer, "cpu"
+        backend.cfg = GenConfig()
+        graph = build_trie_dfa([tokenizer.encode("look</action>")], len(tokenizer))
+        for text in ("look", "inventory</action>"):
+            with self.subTest(text=text):
+                backend.model = SimpleNamespace(generate=lambda **kwargs: torch.tensor([
+                    kwargs["input_ids"][0].tolist() + tokenizer.encode(text)
+                ]))
+                with self.assertRaisesRegex(RuntimeError, "Hard masking did not complete"):
+                    backend._generate_dfa_span("P", graph, stop_string=ACTION_CLOSE, max_new_tokens=32)
+
     def test_hmm_skips_reranking_when_only_one_policy_action_remains(self):
         import torch
 

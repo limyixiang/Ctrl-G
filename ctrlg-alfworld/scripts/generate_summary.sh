@@ -2,8 +2,8 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 {4b|9b} [k4 k8 prompt-only]"
-    echo "If no arms are specified, all three are generated."
+    echo "Usage: $0 {4b|9b} [k4 k8 prompt-only mask-only]"
+    echo "If no arms are specified, all four are generated."
     echo "bash ctrlg-alfworld/scripts/generate_summary.sh 9b k4 k8"
     echo "bash ctrlg-alfworld/scripts/generate_summary.sh 4b prompt-only"
     echo "bash ctrlg-alfworld/scripts/generate_summary.sh 9b  # All arms"
@@ -25,15 +25,15 @@ esac
 
 arms=("$@")
 if [[ ${#arms[@]} -eq 0 ]]; then
-    arms=(k4 k8 prompt-only)
+    arms=(k4 k8 prompt-only mask-only)
 fi
 
 # Validate every arm before generating files.
 for arm in "${arms[@]}"; do
     case "$arm" in
-        k4|k8|prompt-only|prompt_only) ;;
+        k4|k8|prompt-only|prompt_only|mask-only|mask_only) ;;
         *)
-            echo "Error: unknown arm '$arm'. Use k4, k8, or prompt-only." >&2
+            echo "Error: unknown arm '$arm'. Use k4, k8, prompt-only, or mask-only." >&2
             exit 1
             ;;
     esac
@@ -51,6 +51,10 @@ for arm in "${arms[@]}"; do
         prompt-only|prompt_only)
             directory="${results_root}/prompt_only"
             mode="prompt"
+            ;;
+        mask-only|mask_only)
+            directory="${results_root}/mask_only"
+            mode="mask"
             ;;
     esac
 

@@ -167,6 +167,7 @@ def run_episode(
             skillset,
             task_key,
             constrained=condition.use_state_dfa,
+            use_hmm=condition.use_hmm,
             greedy_head=greedy_head,
             hmm_context=context,
         )

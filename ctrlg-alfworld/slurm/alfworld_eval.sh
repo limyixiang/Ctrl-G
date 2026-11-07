@@ -12,10 +12,11 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=e1121685@u.nus.edu
 
-# Compatibility single-condition launcher. For the k=8, k=4, and prompt-only
+# Compatibility single-condition launcher. For the k=8, k=4, prompt-only, and mask-only
 # array use ctrlg-alfworld/slurm/eval_grid.sh.
 #
 #   sbatch ctrlg-alfworld/slurm/alfworld_eval.sh state_prompt 20 50
+#   sbatch ctrlg-alfworld/slurm/alfworld_eval.sh state_mask 20 50
 #   MODEL='Qwen/Qwen3.5-9B' HMM='results/alfworld/hmm_context_model_9b_v1/checkpoint-112' sbatch ctrlg-alfworld/slurm/alfworld_eval.sh state_ctrlg
 
 set -euo pipefail

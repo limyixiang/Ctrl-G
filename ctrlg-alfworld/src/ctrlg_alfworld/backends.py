@@ -566,6 +566,9 @@ class HFBackend(BaseBackend):
         stop_string: str,
         max_new_tokens: int,
         sample: bool = False,
+        temperature: float | None = None,
+        beam_size: int | None = None,
+        min_new_tokens: int = 0,
     ) -> GeneratedChunk:
         from transformers import LogitsProcessorList, StoppingCriteriaList
 
@@ -585,9 +588,10 @@ class HFBackend(BaseBackend):
             output = self.model.generate(
                 input_ids=prompt_ids,
                 do_sample=sample,
-                temperature=self.cfg.temperature if sample else None,
-                num_beams=1 if sample else self.cfg.beam_size,
+                temperature=(self.cfg.temperature if temperature is None else temperature) if sample else None,
+                num_beams=1 if sample else (self.cfg.beam_size if beam_size is None else beam_size),
                 num_return_sequences=1,
+                min_new_tokens=min_new_tokens,
                 max_new_tokens=max_new_tokens,
                 logits_processor=LogitsProcessorList([processor]),
                 stopping_criteria=StoppingCriteriaList([stopper]),
@@ -597,6 +601,8 @@ class HFBackend(BaseBackend):
         text, token_ids, stop_found = _crop_chunk_at_stop(
             self.tokenizer, token_ids, [stop_string]
         )
+        if not stop_found or not dfa_accepts(dfa_graph, token_ids):
+            raise RuntimeError("Hard masking did not complete an accepted span within the token budget")
         _synchronize_if_cuda(self.device)
         latency = time.perf_counter() - started
         return GeneratedChunk(
@@ -724,7 +730,8 @@ class HFBackend(BaseBackend):
             state = self._generate_state_hmm_span(state_prompt, graph, hmm_context, skillset, greedy=greedy)
         else:
             state = self._generate_dfa_span(state_prompt, graph, stop_string=STATE_CLOSE,
-                max_new_tokens=self.cfg.max_state_tokens, sample=not greedy)
+                max_new_tokens=self.cfg.max_state_tokens, sample=not greedy,
+                temperature=self.cfg.rollout_temperature, beam_size=1)
         state = replace(state, latency_seconds=state.latency_seconds + compile_latency)
         return self._assemble_head(thought, state, use_state=True)
 
@@ -735,6 +742,7 @@ class HFBackend(BaseBackend):
         task_key: str,
         *,
         constrained: bool,
+        use_hmm: bool = True,
         greedy_head: bool = True,
         hmm_context=None,
     ) -> TurnGeneration:
@@ -744,10 +752,14 @@ class HFBackend(BaseBackend):
             return self.generate_turn_unconstrained(
                 prompt_text, use_state=True, greedy=greedy_head, evaluation=True
             )
-        if hmm_context is None:
+        if use_hmm and hmm_context is None:
             raise ValueError("state_ctrlg requires explicit observable HMM context")
-        if self.hmm_model is None:
+        if use_hmm and self.hmm_model is None:
             raise ValueError("state_ctrlg requires a joint state/action HMM checkpoint")
+        # Explicitly disable guidance even if this backend has a checkpoint or
+        # the caller supplied an observable context for logging.
+        if not use_hmm:
+            hmm_context = None
         head = self._strict_head(prompt_text, skillset, task_key, greedy=greedy_head,
                                  **({"hmm_context": hmm_context} if hmm_context is not None else {}))
         action_prompt = prompt_text + head.chunk.text
@@ -788,7 +800,10 @@ class HFBackend(BaseBackend):
         # is therefore outside the HMM sequence, but a repaired state close
         # makes the state/action prefix synthetic and cannot be used.
         hmm_skip_reason = None
-        if not prefix_ids:
+        if not use_hmm:
+            prefix_ids = []
+            hmm_skip_reason = "hmm_disabled"
+        elif not prefix_ids:
             hmm_skip_reason = "missing_exact_hmm_prefix"
         elif (
             self.cfg.max_hmm_prefix_tokens is not None
@@ -805,6 +820,7 @@ class HFBackend(BaseBackend):
                 stop_string=ACTION_CLOSE,
                 max_new_tokens=self.cfg.max_action_tokens,
                 sample=self.cfg.do_sample,
+                min_new_tokens=self.cfg.min_action_tokens,
             )
         _synchronize_if_cuda(self.device)
         action_latency = time.perf_counter() - action_started
@@ -838,7 +854,7 @@ class HFBackend(BaseBackend):
             action_latency_seconds=action_latency,
             used_head_repair=head.used_repair,
             state_hmm_applied=hmm_context is not None,
-            state_hmm_skip_reason=None if hmm_context is not None else "missing_hmm_context",
+            state_hmm_skip_reason=None if use_hmm else "hmm_disabled",
             hmm_context_token_ids=tuple(hmm_context.token_ids) if hmm_context is not None else (),
             hmm_context_truncated=hmm_context.truncated if hmm_context is not None else False,
             hmm_applied=effective_hmm,

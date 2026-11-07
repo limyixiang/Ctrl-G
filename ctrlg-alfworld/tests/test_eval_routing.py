@@ -50,6 +50,10 @@ class EvalRoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires --hmm"):
             run_eval.resolve_hmm_path(get_condition("state_ctrlg"), hmm=None)
 
+    def test_mask_condition_never_loads_hmm(self):
+        for checkpoint in (None, "checkpoint"):
+            self.assertIsNone(run_eval.resolve_hmm_path(get_condition("state_mask"), hmm=checkpoint))
+
     def test_hmm_provenance_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -148,7 +152,7 @@ class EvalRoutingTests(unittest.TestCase):
             metadata_path.write_text(json.dumps(metadata))
             config = root / "config.yaml"
             config.write_text("general: {}\nenv: {type: TestEnv}\n")
-            for condition in ("state_prompt", "state_ctrlg"):
+            for condition in ("state_prompt", "state_ctrlg", "state_mask"):
                 with self.subTest(condition=condition), patch.dict(sys.modules, {
                     "alfworld": alfworld, "alfworld.agents": agents,
                     "alfworld.agents.environment": environment,
@@ -163,6 +167,15 @@ class EvalRoutingTests(unittest.TestCase):
                     self.assertTrue(summary["allow_skills_mismatch"])
                     self.assertEqual(summary["skills_sha256"], self.skills.content_sha256)
                     self.assertEqual(summary["hmm_provenance"], metadata if condition == "state_ctrlg" else None)
+                    backend_kwargs = run_eval.HFBackend.call_args.kwargs
+                    self.assertEqual(backend_kwargs["hmm_path"], directory if condition == "state_ctrlg" else None)
+                    if condition == "state_mask":
+                        self.assertEqual(summary["factors"], {
+                            "use_state": True, "use_state_dfa": True,
+                            "use_action_dfa": True, "use_hmm": False,
+                        })
+                        self.assertIsNone(summary["hmm_sha256"])
+                        self.assertEqual(summary["hmm_scope"], "none")
             self.assertEqual(json.loads(metadata_path.read_text()), metadata)
 
     def test_missing_provenance_is_rejected(self):

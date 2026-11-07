@@ -13,10 +13,15 @@ class ExperimentConditionTests(unittest.TestCase):
         self.assertFalse(baseline.use_hmm)
         self.assertTrue(constrained.use_hmm)
 
-    def test_only_two_stable_condition_names_are_active(self):
+    def test_mask_arm_uses_both_dfas_without_hmm(self):
+        mask = get_condition("state_mask")
+        self.assertTrue(mask.use_state and mask.use_state_dfa and mask.use_action_dfa)
+        self.assertFalse(mask.use_hmm)
+
+    def test_three_stable_condition_names_are_active(self):
         self.assertEqual(
             condition_choices(),
-            [ConditionName.STATE_PROMPT.value, ConditionName.STATE_CTRLG.value],
+            [ConditionName.STATE_PROMPT.value, ConditionName.STATE_CTRLG.value, ConditionName.STATE_MASK.value],
         )
 
     def test_unknown_condition_name_is_rejected(self):

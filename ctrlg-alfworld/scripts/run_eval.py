@@ -113,7 +113,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--beam_size", type=int, default=1,
-        help="Matched action beam width in both arms (default: 1)",
+        help="Matched action beam width across arms (default: 1)",
     )
     parser.add_argument("--max_thought_tokens", type=int, default=1024)
     parser.add_argument("--max_state_tokens", type=int, default=512)

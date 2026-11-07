@@ -32,15 +32,22 @@ in the [skill contract](#skill-contract).
 
 ## Evaluation design
 
-This package evaluates one matched pair using the same prompt construction,
+This package evaluates three conditions using the same prompt construction,
 complete action/observation history, and byte-identical `templates/SKILLS.md`:
 
 | Condition | State | Action |
 |---|---|---|
 | `state_prompt` | unconstrained | unconstrained |
 | `state_ctrlg` | schema DFA + joint HMM | policy DFA + same joint HMM |
+| `state_mask` | schema DFA, hard masking only | policy DFA, hard masking only |
 
-`info["admissible_commands"]` is never passed to either decoder and is never
+`state_mask` applies the same state/action languages and token-budget reachability
+masks as `state_ctrlg`, with no HMM checkpoint, probability reweighting, or HMM
+lookahead. Compare `state_mask` against `state_prompt` to measure hard masking,
+and `state_ctrlg` against `state_mask` to measure the added contribution of HMM
+guidance across both state and action generation.
+
+`info["admissible_commands"]` is never passed to any decoder and is never
 shown in the prompt. It is retained only as `admissible_gt` after generation,
 to score `action_was_admissible`. There is no symbolic state tracker and no
 fact extraction from observations or prompt text.
@@ -49,7 +56,7 @@ The LLM prompt includes the task description, skill document, initial
 observation, all previous executed actions and their resulting observations,
 and the current observation. Previous generated state blocks and native
 thinking are logged but are not replayed in the prompt. Each turn's state is
-generated from the action/observation history. Both conditions use the same
+generated from the action/observation history. All conditions use the same
 history format and receive identical prompt content for an identical trajectory.
 
 ## Skill contract
@@ -62,8 +69,8 @@ history format and receive identical prompt content for an identical trajectory.
 
 Loading fails on malformed YAML, duplicate names, unknown action templates,
 unsupported schema types/operators, invalid bounds, or unsupported effects.
-Both conditions receive the raw skill file; only `state_ctrlg` compiles its
-machine-readable blocks.
+All conditions receive the raw skill file; `state_ctrlg` and `state_mask` compile
+its machine-readable blocks into generation constraints.
 
 State summaries are canonical one-line flow-style YAML. The schemas retain the task
 fields and search ledger, require exactly two independent `targets` records for
@@ -76,7 +83,7 @@ held_relation: none | target | non_target | unknown
 ```
 
 These values are model claims. They are not checked against the real
-trajectory. Search-ledger syntax is guaranteed in `state_ctrlg`; factual
+trajectory. Search-ledger syntax is guaranteed in both constrained conditions; factual
 correctness, overlap, and revisit tracking are not.
 
 The current policy set contains eight rules:
@@ -128,6 +135,11 @@ Strict generation has five phases:
 4. Per-turn policy-language compilation from declared fields.
 5. Action body plus `</action>` under the policy DFA and the same HMM, followed by EOS.
 
+`state_mask` follows these same phases with only the hard DFA logits processor
+in phases 2 and 5. Its action stops at `</action>` without a sampled terminal EOS.
+Native thought generation, state/action budgets, sampling temperatures, and action
+beam widths are matched; state generation always uses one beam in both arms.
+
 The default state/action caps are 512/32 tokens. Head sampling and action
 sampling are independent controls with the same temperatures and beam
 settings across arms. Reported generated tokens exclude controller-inserted
@@ -154,7 +166,7 @@ generation; it does not invent or fix state fields. Environment admissibility
 and actual progress never determine selection. If that action fails in the
 environment, its feedback enters history. If no attempt is executable, the episode ends
 and all its observed attempts remain available for training. Evaluation uses
-one turn per step in both arms, without collection retries.
+one turn per step in all arms, without collection retries.
 
 Attempt records and history candidate audits log state-schema validity/errors,
 state repair/truncation, action-grammar validity, execution selection and explicit
@@ -191,7 +203,7 @@ files also record retained history-turn counts and truncation flags. Evaluation
 logs retained token counts and truncation per step. Original token counts
 before truncation are not recorded.
 
-This serialization is **HMM input only**. Both LLM arms keep the same full
+This serialization is **HMM input only**. All LLM arms keep the same full
 prompt described above. At state inference the HMM consumes `C_t + <state>`;
 at action inference it consumes `C_t + generated state + <action>`. No extra
 context text is added to either LLM prompt. State generation stops at its
@@ -276,12 +288,17 @@ editing metadata cannot convert their token sequences.
 
 ## Evaluation
 
-Run both cells with the same model, skills, seed, split, and episode manifest:
+Run all three conditions with the same model, skills, seed, split, and episode manifest:
 
 ```bash
 python ctrlg-alfworld/scripts/run_eval.py \
   --model Qwen/Qwen3.5-9B \
   --condition state_prompt \
+  --out results/alfworld/pair
+
+python ctrlg-alfworld/scripts/run_eval.py \
+  --model Qwen/Qwen3.5-9B \
+  --condition state_mask \
   --out results/alfworld/pair
 
 python ctrlg-alfworld/scripts/run_eval.py \
@@ -294,11 +311,25 @@ python ctrlg-alfworld/scripts/summarize_results.py \
   --results results/alfworld/pair
 ```
 
-The summary supports both a flat matched pair and the `k8/`, `k4/`, and
-`prompt_only/` grid. Each condition reports episode/success/failure counts,
+The summary supports a flat three-condition directory and the `k8/`, `k4/`,
+`prompt_only/`, and `mask_only/` grid. Legacy pairs and grids without `mask_only/`
+remain supported. `slurm/eval_grid.sh` uses array indices 0/1 for k=8/k=4,
+2 for prompt-only, and 3 for hard masking only. The two controls are shared
+across HMM context lengths; `state_mask` requires no `--hmm`.
+
+Each condition reports episode/success/failure counts,
 total actions and inadmissible actions, actions per episode, token totals and
 per-episode costs, generation latency, and constraint diagnostics. Ctrl-G minus
 prompt-only deltas remain in `ctrlg_effect`.
+
+With masking-only results present, `masking_effect` reports hard masking minus
+prompt-only, and `hmm_effect` reports Ctrl-G minus hard masking (per HMM context
+in a grid). `paired_hmm_comparisons` compares each HMM arm directly with the
+masking-only arm on the same episodes, including success disagreements and
+action differences on episodes both solve. In those comparisons, `baseline`
+means the masking-only arm. The masking-versus-prompt comparison appears in
+`paired_comparisons` under `state_mask` or `mask_only`, using `mask_*` fields.
+These reports use schema version 3; legacy reports retain version 2.
 
 When sibling `eval_<condition>.jsonl` files are available, the report also includes:
 

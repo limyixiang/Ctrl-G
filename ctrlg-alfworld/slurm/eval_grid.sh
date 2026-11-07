@@ -2,7 +2,7 @@
 #SBATCH -J alfworld-grid
 #SBATCH -p gpu-long
 #SBATCH -t 72:00:00
-#SBATCH --array=0-2
+#SBATCH --array=0-3
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -38,7 +38,7 @@ if [[ "${ALLOW_SKILLS_MISMATCH:-0}" == "1" ]]; then
 fi
 CONDITION=state_ctrlg
 HMM_ARGS=()
-# Each base model shares one prompt-only baseline across both HMM contexts.
+# Both HMM contexts share prompt-only and hard-masking-only controls.
 case "$SLURM_ARRAY_TASK_ID" in
   0)
     ARM=k8
@@ -54,8 +54,12 @@ case "$SLURM_ARRAY_TASK_ID" in
     ARM=prompt_only
     CONDITION=state_prompt
     ;;
+  3)
+    ARM=mask_only
+    CONDITION=state_mask
+    ;;
   *)
-    echo "Invalid array task ID: $SLURM_ARRAY_TASK_ID (expected 0, 1, or 2)" >&2
+    echo "Invalid array task ID: $SLURM_ARRAY_TASK_ID (expected 0, 1, 2, or 3)" >&2
     exit 1
     ;;
 esac
@@ -72,6 +76,6 @@ python ctrlg-alfworld/scripts/run_eval.py \
   --seed "$SEED" \
   --out "$OUTPUT/$ARM"
 
-# Outputs are written under $OUTPUT/{k8,k4,prompt_only}/.
+# Outputs are written under $OUTPUT/{k8,k4,prompt_only,mask_only}/.
 # MODEL='Qwen/Qwen3.5-9B' HMM_K8='results/alfworld/hmm_context_model_9b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_9b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_9b' sbatch ctrlg-alfworld/slurm/eval_grid.sh
 # MODEL='Qwen/Qwen3.5-4B' HMM_K8='results/alfworld/hmm_context_model_4b_k8_v1/checkpoint-824' HMM_K4='results/alfworld/hmm_context_model_4b_k4_v1/checkpoint-824' OUTPUT='results/alfworld/grid_4b' sbatch ctrlg-alfworld/slurm/eval_grid.sh

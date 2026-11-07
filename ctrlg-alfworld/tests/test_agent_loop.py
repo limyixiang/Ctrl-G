@@ -31,11 +31,13 @@ class FakeBackend:
         self.calls = []
         self.prompt_texts = []
         self.contexts = []
+        self.hmm_flags = []
 
-    def generate_turn(self, prompt_text, skillset, task_key, *, constrained, greedy_head, hmm_context):
+    def generate_turn(self, prompt_text, skillset, task_key, *, constrained, use_hmm, greedy_head, hmm_context):
         self.calls.append((task_key, constrained, skillset.content_sha256))
         self.prompt_texts.append(prompt_text)
         self.contexts.append(hmm_context)
+        self.hmm_flags.append(use_hmm)
         head = f"choose</think><state>{STATE}</state><action>"
         tail = "look</action>"
         parsed = parse_turn(head, tail, use_state=True)
@@ -94,6 +96,7 @@ class AgentLoopTests(unittest.TestCase):
             self.assertTrue(record.success)
             self.assertEqual(record.task_description, "look around")
             self.assertEqual(backend.calls[0][0:2], ("put", condition.use_state_dfa))
+            self.assertEqual(backend.hmm_flags, [condition.use_hmm])
             self.assertNotIn("look", repr(backend.calls[0]))
             self.assertNotIn("Your admissible actions", backend.prompt_texts[0])
             self.assertEqual(record.steps[0].admissible_gt, ["look", "go to countertop 1"])
@@ -104,7 +107,7 @@ class AgentLoopTests(unittest.TestCase):
             self.assertNotIn("decision", saved)
             self.assertNotIn("decision_fields", saved)
             prompts.append(backend.prompt_texts[0])
-        self.assertEqual(prompts[0].encode(), prompts[1].encode())
+        self.assertTrue(all(prompt.encode() == prompts[0].encode() for prompt in prompts))
 
     def test_prompt_arm_records_rejected_requirements(self):
         state = STATE.replace("previous_action: none", "previous_action: open countertop 1").replace(

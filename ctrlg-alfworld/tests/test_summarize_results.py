@@ -84,6 +84,13 @@ def grid_summaries():
     return values
 
 
+def mask_summary():
+    value = deepcopy(summaries()["state_prompt"])
+    value.update(condition="state_mask", hmm_scope="none")
+    value["factors"].update(use_state_dfa=True, use_action_dfa=True)
+    return value
+
+
 def episode_record(gamefile, success, num_steps, *, task_key="put", bad_actions=0):
     return {
         "gamefile": gamefile, "task_key": task_key, "success": success,
@@ -104,6 +111,9 @@ def episode_record(gamefile, success, num_steps, *, task_key="put", bad_actions=
 
 def evaluation_summaries(episodes, *, grid=True):
     values = deepcopy(grid_summaries() if grid else summaries())
+    mask_arm = "mask_only" if grid else "state_mask"
+    if mask_arm in episodes:
+        values[mask_arm] = mask_summary()
     for arm, records in episodes.items():
         summary = values[arm]
         # The legacy-pair fixtures share a metrics object; real JSON files do not.
@@ -141,6 +151,80 @@ class SummaryTests(unittest.TestCase):
 
     def test_valid_pair(self):
         module.validate_comparable(summaries())
+
+    def test_mask_arm_requires_matched_constraints_settings_and_no_hmm(self):
+        for grid in (False, True):
+            arm = "mask_only" if grid else "state_mask"
+            validate = module.validate_grid if grid else module.validate_comparable
+            values = grid_summaries() if grid else summaries()
+            values[arm] = mask_summary()
+            validate(values)
+            # A context window does not participate in hard-masked decoding.
+            values[arm]["hmm_context_steps"] = 8
+            validate(values)
+            for field, invalid in (
+                ("model", "other"), ("beam_size", 1), ("skills_sha256", "other"),
+                ("episode_gamefiles", ["b", "a"]), ("hmm", "checkpoint"),
+                ("hmm_sha256", "hash"), ("hmm_provenance", {"model": "m"}),
+                ("hmm_scope", "state_and_action"),
+                ("factors", {"use_state": True, "use_state_dfa": False,
+                             "use_action_dfa": True, "use_hmm": False}),
+            ):
+                with self.subTest(grid=grid, field=field):
+                    broken = deepcopy(values)
+                    broken[arm][field] = invalid
+                    with self.assertRaisesRegex(ValueError, "state_mask"):
+                        validate(broken)
+
+    def test_three_condition_reports_separate_masking_and_hmm_effects(self):
+        for grid in (False, True):
+            with self.subTest(grid=grid), tempfile.TemporaryDirectory() as directory:
+                mask_arm = "mask_only" if grid else "state_mask"
+                baseline = "prompt_only" if grid else "state_prompt"
+                treatments = ("k8", "k4") if grid else ("state_ctrlg",)
+                values = grid_summaries() if grid else summaries()
+                values[mask_arm] = mask_summary()
+                episodes = {arm: [episode_record("a", True, 4), episode_record("b", False, 5)] for arm in values}
+                episodes[baseline] = [episode_record("a", False, 5), episode_record("b", False, 5)]
+                for arm in treatments:
+                    episodes[arm] = [episode_record("a", True, 2), episode_record("b", True, 3)]
+                for arm, records in episodes.items():
+                    values[arm]["metrics"] = dict(values[arm]["metrics"])
+                    values[arm]["metrics"].update(module.episode_totals(records))
+                    values[arm]["metrics"]["success_rate"] = sum(ep["success"] for ep in records)/2
+                root = Path(directory)
+                self.write_summaries(root, values, grid=grid, episodes=episodes)
+                output = self.run_main(root, "--allow-skills-mismatch")
+                self.assertEqual(output["report_schema_version"], 3)
+                self.assertIn(mask_arm, output["conditions"])
+                self.assertEqual(output["masking_effect"]["success_rate"], .5)
+                self.assertEqual(output["paired_comparisons"][mask_arm]["mask_only_successes"], 1)
+                for arm in treatments:
+                    effect = output["hmm_effect"][arm] if grid else output["hmm_effect"]
+                    self.assertEqual(effect["success_rate"], .5)
+                    paired = output["paired_hmm_comparisons"][arm]
+                    self.assertEqual(paired["ctrlg_only_successes"], 1)
+                    self.assertEqual(paired["actions_on_both_successful"]["ctrlg_minus_baseline"]["mean"], -2)
+                self.assertEqual(set(output["skills_validation"]["hmm_training_sha256_by_arm"]), set(treatments))
+
+    def test_mask_arm_without_traces_reports_aggregate_hmm_effect(self):
+        values = grid_summaries()
+        values["mask_only"] = mask_summary()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_summaries(root, values)
+            output = self.run_main(root)
+        self.assertEqual(output["hmm_effect"]["k8"]["success_rate"], 0)
+        self.assertIsNone(output["paired_hmm_comparisons"]["k8"])
+        self.assertIsNone(output["paired_comparisons"]["mask_only"])
+
+    def test_present_mask_directory_requires_its_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_summaries(root, grid_summaries())
+            (root / "mask_only").mkdir()
+            with self.assertRaisesRegex(FileNotFoundError, "mask_only"):
+                self.run_main(root)
 
     def test_legacy_pair_requires_matching_context_lengths(self):
         values = summaries()

@@ -2,7 +2,7 @@
 
 python ctrlg-alfworld/scripts/summarize_results.py --results results/alfworld/grid_4b --out results/alfworld/grid_4b/grid_summary.json
 
-Legacy flat, two-condition result directories are also supported.
+Flat three-condition and legacy two-condition result directories are supported.
 Sibling eval_<condition>.jsonl files supply episode-level and paired statistics.
 Without those files, only recorded aggregate metrics are reported; unavailable
 episode statistics and paired comparisons are null. Gamefile lists are used for
@@ -33,6 +33,7 @@ GRID_ARMS = {
     "k8": ("state_ctrlg", 8),
     "k4": ("state_ctrlg", 4),
     "prompt_only": ("state_prompt", None),
+    "mask_only": ("state_mask", None),
 }
 
 
@@ -90,6 +91,16 @@ def distribution(values: list) -> dict:
         "p90": ordered[math.ceil(0.9 * len(values)) - 1] if values else None,
         "min": ordered[0] if values else None,
         "max": ordered[-1] if values else None,
+    }
+
+
+def metric_deltas(treatment: dict, baseline: dict) -> dict:
+    return {
+        metric: treatment[metric] - baseline[metric]
+        for metric in METRIC_NAMES
+        if type(treatment.get(metric)) in (int, float)
+        and type(baseline.get(metric)) in (int, float)
+        and metric != "episodes"
     }
 
 
@@ -294,7 +305,9 @@ def summarize_condition(summary: dict, episodes: list[dict] | None) -> dict:
     return result
 
 
-def compare_episodes(treatment: list[dict] | None, baseline: list[dict] | None) -> dict | None:
+def compare_episodes(
+    treatment: list[dict] | None, baseline: list[dict] | None, *, treatment_label: str = "ctrlg",
+) -> dict | None:
     if treatment is None or baseline is None:
         return None
     if [(ep["gamefile"], ep["task_key"]) for ep in treatment] != [
@@ -306,18 +319,18 @@ def compare_episodes(treatment: list[dict] | None, baseline: list[dict] | None) 
     action_deltas = [a["num_steps"] - b["num_steps"] for a, b in both_successful]
     return {
         "episodes": len(pairs),
-        "ctrlg_only_successes": sum(a["success"] and not b["success"] for a, b in pairs),
+        f"{treatment_label}_only_successes": sum(a["success"] and not b["success"] for a, b in pairs),
         "baseline_only_successes": sum(b["success"] and not a["success"] for a, b in pairs),
         "both_successes": len(both_successful),
         "both_failures": sum(not a["success"] and not b["success"] for a, b in pairs),
         "actions_on_both_successful": {
             "episodes": len(both_successful),
-            "ctrlg_mean": mean([a["num_steps"] for a, _ in both_successful]) if both_successful else None,
+            f"{treatment_label}_mean": mean([a["num_steps"] for a, _ in both_successful]) if both_successful else None,
             "baseline_mean": mean([b["num_steps"] for _, b in both_successful]) if both_successful else None,
-            "ctrlg_minus_baseline": distribution(action_deltas),
-            "ctrlg_fewer_actions": sum(delta < 0 for delta in action_deltas),
+            f"{treatment_label}_minus_baseline": distribution(action_deltas),
+            f"{treatment_label}_fewer_actions": sum(delta < 0 for delta in action_deltas),
             "same_actions": sum(delta == 0 for delta in action_deltas),
-            "ctrlg_more_actions": sum(delta > 0 for delta in action_deltas),
+            f"{treatment_label}_more_actions": sum(delta > 0 for delta in action_deltas),
         },
     }
 
@@ -327,9 +340,9 @@ def validate_comparable(
     allow_source_mismatch: bool = False,
     allow_skills_mismatch: bool = False,
 ) -> None:
-    """Validate a pair, allowing the grid's specified HMM context length."""
+    """Validate matched conditions, allowing the grid's HMM context length."""
 
-    conditions = condition_choices()
+    conditions = list(summaries)
     baseline = summaries["state_prompt"]
     problems = []
     for condition in conditions:
@@ -362,25 +375,39 @@ def validate_comparable(
                     f"expected {value!r}"
                 )
 
-    candidate = summaries["state_ctrlg"]
-    for field in COMPARABILITY_FIELDS:
-        # The shared prompt-only baseline does not use HMM context. Each grid
-        # treatment must instead match its arm and its own checkpoint metadata.
-        if field == "hmm_context_steps" and hmm_context_steps is not None:
+    for condition, candidate in summaries.items():
+        if condition == "state_prompt":
             continue
-        if field == "source_tree_sha256" and allow_source_mismatch:
-            continue
-        if candidate.get(field) != baseline.get(field):
-            problems.append(
-                f"state_ctrlg: {field}={candidate.get(field)!r} differs "
-                f"from state_prompt={baseline.get(field)!r}"
-            )
-    if hmm_context_steps is not None and candidate.get("hmm_context_steps") != hmm_context_steps:
-        problems.append(f"state_ctrlg: expected hmm_context_steps={hmm_context_steps}")
-    if candidate.get("episode_gamefiles") != baseline.get("episode_gamefiles"):
-        problems.append("state_ctrlg: ordered episode gamefiles differ")
+        for field in COMPARABILITY_FIELDS:
+            # Context length is unused by hard masking; grid HMM arms instead
+            # match their specified window and checkpoint metadata below.
+            if field == "hmm_context_steps" and (
+                hmm_context_steps is not None or not get_condition(condition).use_hmm
+            ):
+                continue
+            if field == "source_tree_sha256" and allow_source_mismatch:
+                continue
+            if candidate.get(field) != baseline.get(field):
+                problems.append(
+                    f"{condition}: {field}={candidate.get(field)!r} differs "
+                    f"from state_prompt={baseline.get(field)!r}"
+                )
+        if candidate.get("episode_gamefiles") != baseline.get("episode_gamefiles"):
+            problems.append(f"{condition}: ordered episode gamefiles differ")
+        if not get_condition(condition).use_hmm:
+            if any(candidate.get(field) is not None for field in ("hmm", "hmm_sha256", "hmm_provenance")):
+                problems.append(f"{condition}: hard masking must not select an HMM checkpoint or provenance")
+            if candidate.get("hmm_scope") != "none":
+                problems.append(f"{condition}: expected no HMM guidance")
     if baseline.get("hmm") is not None or baseline.get("hmm_sha256") is not None:
         problems.append("state_prompt: baseline must not select an HMM checkpoint")
+    if "state_ctrlg" not in summaries:
+        if problems:
+            raise ValueError("condition summaries are not comparable:\n- " + "\n- ".join(problems))
+        return
+    candidate = summaries["state_ctrlg"]
+    if hmm_context_steps is not None and candidate.get("hmm_context_steps") != hmm_context_steps:
+        problems.append(f"state_ctrlg: expected hmm_context_steps={hmm_context_steps}")
     if candidate.get("hmm") is None or candidate.get("hmm_sha256") is None:
         problems.append("state_ctrlg: matched HMM checkpoint and hash are required")
     provenance = candidate.get("hmm_provenance") or {}
@@ -416,11 +443,12 @@ def validate_grid(
     summaries: dict[str, dict], *, allow_source_mismatch: bool = False,
     allow_skills_mismatch: bool = False,
 ) -> None:
-    missing = [arm for arm in GRID_ARMS if arm not in summaries]
+    # Historical grids have no mask-only arm. Validate it when supplied.
+    missing = [arm for arm in GRID_ARMS if arm != "mask_only" and arm not in summaries]
     if missing:
         raise ValueError(f"missing grid arms: {', '.join(missing)}")
     for arm, (condition, context_steps) in GRID_ARMS.items():
-        if condition == "state_prompt":
+        if condition == "state_prompt" or arm not in summaries:
             continue
         try:
             validate_comparable(
@@ -437,7 +465,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--results", required=True,
-        help="Grid root containing k8/, k4/, and prompt_only/ (or a legacy pair directory)",
+        help="Grid root containing k8/, k4/, prompt_only/, and mask_only/ (or a flat condition directory)",
     )
     parser.add_argument("--out", default=None)
     parser.add_argument(
@@ -456,9 +484,11 @@ def main():
     )
     paths = (
         {arm: root / arm / f"summary_{condition}.json"
-         for arm, (condition, _) in GRID_ARMS.items()}
+         for arm, (condition, _) in GRID_ARMS.items()
+         if arm != "mask_only" or (root / arm).exists()}
         if is_grid else
-        {condition: root / f"summary_{condition}.json" for condition in condition_choices()}
+        {condition: root / f"summary_{condition}.json" for condition in condition_choices()
+         if condition != "state_mask" or (root / f"summary_{condition}.json").exists()}
     )
     summaries = {}
     for arm, path in paths.items():
@@ -478,6 +508,8 @@ def main():
         )
     baseline = "prompt_only" if is_grid else "state_prompt"
     treatments = ("k8", "k4") if is_grid else ("state_ctrlg",)
+    mask_arm = "mask_only" if is_grid else "state_mask"
+    has_mask = mask_arm in summaries
 
     episodes = {
         arm: load_episodes(path.with_name(f"eval_{summaries[arm]['condition']}.jsonl"), summaries[arm])
@@ -487,9 +519,11 @@ def main():
         arm: summarize_condition(summary, episodes[arm]) for arm, summary in summaries.items()
     }
     output = {
-        "report_schema_version": 2,
-        "design": "matched three-arm grid comparison" if is_grid else "matched two-condition comparison",
-        "estimand": "each Ctrl-G arm minus prompt_only" if is_grid else "state_ctrlg minus state_prompt",
+        "report_schema_version": 3 if has_mask else 2,
+        "design": ("matched four-arm grid comparison" if is_grid else "matched three-condition comparison")
+        if has_mask else ("matched three-arm grid comparison" if is_grid else "matched two-condition comparison"),
+        "estimand": ("hard masking minus prompt-only; each Ctrl-G arm minus hard masking" if has_mask else
+                     "each Ctrl-G arm minus prompt_only" if is_grid else "state_ctrlg minus state_prompt"),
         "model": summaries[baseline]["model"],
         "split": summaries[baseline]["split"],
         "seed": summaries[baseline]["seed"],
@@ -518,13 +552,7 @@ def main():
         for arm in treatments
     }
     effects = {
-        arm: {
-            metric: table[arm][metric] - table[baseline][metric]
-            for metric in METRIC_NAMES
-            if type(table[arm].get(metric)) in (int, float)
-            and type(table[baseline].get(metric)) in (int, float)
-            and metric != "episodes"
-        }
+        arm: metric_deltas(table[arm], table[baseline])
         for arm in treatments
     }
     if is_grid:
@@ -536,6 +564,19 @@ def main():
     else:
         output["hmm_artifact"] = artifacts["state_ctrlg"]
         output["ctrlg_effect"] = effects["state_ctrlg"]
+    if has_mask:
+        output["masking_effect"] = metric_deltas(table[mask_arm], table[baseline])
+        hmm_effects = {
+            arm: metric_deltas(table[arm], table[mask_arm])
+            for arm in treatments
+        }
+        output["hmm_effect"] = hmm_effects if is_grid else hmm_effects["state_ctrlg"]
+        output["paired_comparisons"][mask_arm] = compare_episodes(
+            episodes[mask_arm], episodes[baseline], treatment_label="mask",
+        )
+        output["paired_hmm_comparisons"] = {
+            arm: compare_episodes(episodes[arm], episodes[mask_arm]) for arm in treatments
+        }
     if args.allow_source_mismatch:
         source_hashes = {
             arm: summary["source_tree_sha256"] for arm, summary in summaries.items()

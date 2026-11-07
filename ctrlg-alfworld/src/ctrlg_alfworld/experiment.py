@@ -1,4 +1,4 @@
-"""The matched two-condition Ctrl-G/ALFWorld experiment."""
+"""The matched three-condition Ctrl-G/ALFWorld experiment."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from enum import Enum
 class ConditionName(str, Enum):
     STATE_PROMPT = "state_prompt"
     STATE_CTRLG = "state_ctrlg"
+    STATE_MASK = "state_mask"
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,12 @@ CONDITIONS: dict[ConditionName, ExperimentCondition] = {
     ConditionName.STATE_CTRLG: ExperimentCondition(
         ConditionName.STATE_CTRLG,
         use_hmm=True,
+        use_state_dfa=True,
+        use_action_dfa=True,
+    ),
+    ConditionName.STATE_MASK: ExperimentCondition(
+        ConditionName.STATE_MASK,
+        use_hmm=False,
         use_state_dfa=True,
         use_action_dfa=True,
     ),

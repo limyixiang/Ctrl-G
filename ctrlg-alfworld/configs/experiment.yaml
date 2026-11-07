@@ -2,7 +2,8 @@ experiment:
   conditions:
     - state_prompt
     - state_ctrlg
-  estimand: "effect of joint state/action Ctrl-G with schema/policy constraints over the byte-identical prompt-only agent"
+    - state_mask
+  estimand: "hard masking over prompt-only; added HMM guidance over identical state/action hard masks"
   seed: 42
   max_steps: 50
   max_thought_tokens: 1024
